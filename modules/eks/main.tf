@@ -9,9 +9,9 @@ module "eks" {
 
   addons = {
     coredns                = {}
-    eks-pod-identity-agent = {}
-    kube-proxy             = {}
-    vpc-cni                = {}
+    eks-pod-identity-agent = { before_compute = true }
+    kube-proxy             = { before_compute = true }
+    vpc-cni                = { before_compute = true }
     aws-ebs-csi-driver     = {}
     metrics-server         = {}
   }
