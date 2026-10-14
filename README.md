@@ -80,11 +80,19 @@ Before deploying this Terraform configuration, ensure the following are in place
 
 ### 1. S3 Backend Bucket
 
-Create an S3 bucket named `tfm-unir-backend1` in `us-east-1` to store the Terraform state file:
+Create an S3 bucket named `tf-backend-lab-s3` in `us-east-1` to store the Terraform state file:
 
 ```sh
-aws s3 mb s3://tfm-unir-backend1 --region us-east-1
+aws s3 mb s3://tf-backend-lab-s3 --region us-east-1
 ```
+
+> If you need to use a different bucket name, update the `bucket` field in [`provider.tf`](provider.tf) before running `terraform init`:
+> ```hcl
+> backend "s3" {
+>   bucket = "your-bucket-name"
+>   ...
+> }
+> ```
 
 ### 2. GitHub Actions Secrets
 
