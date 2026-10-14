@@ -12,7 +12,9 @@ module "eks" {
     eks-pod-identity-agent = { before_compute = true }
     kube-proxy             = { before_compute = true }
     vpc-cni                = { before_compute = true }
-    aws-ebs-csi-driver     = {}
+    aws-ebs-csi-driver     = {
+      service_account_role_arn = aws_iam_role.ebs_csi_driver.arn
+    }
     metrics-server         = {}
   }
 
@@ -76,10 +78,31 @@ resource "aws_eks_access_policy_association" "devops_user2_policy_association" {
   }
 }
 
-# Attach EBS CSI policy to node group role
+# ── EBS CSI Driver IRSA Role ───────────────────────────────────────────────────
+resource "aws_iam_role" "ebs_csi_driver" {
+  name = "${var.eks_cluster_name}-ebs-csi-driver"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Effect = "Allow"
+      Principal = {
+        Federated = module.eks.oidc_provider_arn
+      }
+      Condition = {
+        StringEquals = {
+          "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub" = "system:serviceaccount:kube-system:ebs-csi-controller-sa"
+          "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+}
+
 resource "aws_iam_role_policy_attachment" "ebs_csi_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-  role       = module.eks.eks_managed_node_groups["devopslab-node-group"].iam_role_name
+  role       = aws_iam_role.ebs_csi_driver.name
 }
 
 # ── Karpenter Node Role ────────────────────────────────────────────────────────
