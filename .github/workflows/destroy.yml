@@ -36,16 +36,8 @@ jobs:
 
       - name: Terraform Plan for Destroy
         run: terraform plan -destroy
-
-      - name: Empty ecr images
-        run: |
-          for repo in $(aws ecr describe-repositories --region ${{ inputs.aws_region }} --query "repositories[?starts_with(repositoryName, \`devopslab-\`)].repositoryName" --output text); do
-            echo "Deleting images from repository: $repo"
-            image_ids=$(aws ecr list-images --repository-name "$repo" --query "imageIds" --output json 2>/dev/null)
-            if [ "$image_ids" != "[]" ] && [ "$image_ids" != "null" ]; then
-              aws ecr batch-delete-image --repository-name "$repo" --image-ids "$image_ids" || true
-            fi
-          done
+        env:
+          TF_VAR_eks_cluster_name: ${{ inputs.eks_cluster_name }}
       
       - name: Update kubeconfig
         run: |
@@ -57,31 +49,17 @@ jobs:
               --region ${{ inputs.aws_region }}
           fi
 
-      - name: Delete all ingress resources from all namespaces
+      - name: Teardown AWS Load Balancer Controller
         run: |
-          kubectl delete ingress --all --all-namespaces || true
-          echo "Waiting for load balancer cleanup..."
-          sleep 30
+          chmod +x resources/scripts/teardown-lb-controller.sh
+          ./resources/scripts/teardown-lb-controller.sh ${{ inputs.aws_region }}
 
-      - name: Delete aws-load-balancer-controller
+      - name: Teardown Karpenter
         run: |
-          if helm list -n kube-system | grep -q aws-load-balancer-controller; then
-            helm uninstall aws-load-balancer-controller -n kube-system
-          fi
-          sleep 15
-      
-      - name: Delete aws load balancer
-        run: |
-          LB_ARN=$(aws elbv2 describe-load-balancers \
-            --query "LoadBalancers[?contains(LoadBalancerName, 'shareduniralb')].LoadBalancerArn" \
-            --output text 2>/dev/null || echo "")
-          
-          if [ -z "$LB_ARN" ] || [ "$LB_ARN" = "None" ]; then
-            echo "Load balancer 'shareduniralb' not found, skipping deletion."
-          else
-            echo "Deleting load balancer: $LB_ARN"
-            aws elbv2 delete-load-balancer --load-balancer-arn "$LB_ARN"
-          fi
+          chmod +x resources/scripts/teardown-karpenter.sh
+          ./resources/scripts/teardown-karpenter.sh
 
       - name: Terraform Destroy
         run: terraform destroy -auto-approve
+        env:
+          TF_VAR_eks_cluster_name: ${{ inputs.eks_cluster_name }}

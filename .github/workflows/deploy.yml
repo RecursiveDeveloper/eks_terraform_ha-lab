@@ -36,9 +36,13 @@ jobs:
 
       - name: Terraform Plan
         run: terraform plan
+        env:
+          TF_VAR_eks_cluster_name: ${{ inputs.eks_cluster_name }}
 
       - name: Terraform Apply
         run: terraform apply -auto-approve
+        env:
+          TF_VAR_eks_cluster_name: ${{ inputs.eks_cluster_name }}
       
       - name: Update kubeconfig
         run: |
@@ -46,68 +50,16 @@ jobs:
             --name ${{ inputs.eks_cluster_name }} \
             --region ${{ inputs.aws_region }}
 
-      - name: Clean up existing load balancer resources
+      - name: Setup AWS Load Balancer Controller
         run: |
-          kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found=true
-          kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found=true
-          helm uninstall aws-load-balancer-controller -n kube-system --ignore-not-found || echo "Controller not found"
-          sleep 10
+          chmod +x resources/scripts/setup-lb-controller.sh
+          ./resources/scripts/setup-lb-controller.sh ${{ inputs.eks_cluster_name }} ${{ inputs.aws_region }}
 
-      - name: Configure aws load balancer controller
+      - name: Install Karpenter
         run: |
-          curl -O https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.13.3/docs/install/iam_policy.json
-          aws iam create-policy \
-            --policy-name AWSLoadBalancerControllerIAMPolicy \
-            --policy-document file://iam_policy.json 2>/dev/null || echo "Policy already exists"
+          chmod +x resources/scripts/install-karpenter.sh
+          ./resources/scripts/install-karpenter.sh ${{ inputs.eks_cluster_name }}
 
-          eksctl delete iamserviceaccount \
-            --cluster=${{ inputs.eks_cluster_name }} \
-            --namespace=kube-system \
-            --name=aws-load-balancer-controller \
-            --region ${{ inputs.aws_region }} || echo "ServiceAccount not found or already deleted"
-          
-          sleep 20
-          
-          eksctl create iamserviceaccount \
-            --cluster=${{ inputs.eks_cluster_name }} \
-            --namespace=kube-system \
-            --name=aws-load-balancer-controller \
-            --attach-policy-arn=arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/AWSLoadBalancerControllerIAMPolicy \
-            --region ${{ inputs.aws_region }} \
-            --approve
-
-          helm repo add eks https://aws.github.io/eks-charts
-          helm repo update
-          wget https://raw.githubusercontent.com/aws/eks-charts/master/stable/aws-load-balancer-controller/crds/crds.yaml
-          kubectl apply -f crds.yaml
-          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-            -n kube-system \
-            --set clusterName=${{ inputs.eks_cluster_name }} \
-            --set serviceAccount.create=false \
-            --set serviceAccount.name=aws-load-balancer-controller \
-            --set region=${{ inputs.aws_region }} \
-            --set vpcId=$(aws eks describe-cluster --name ${{ inputs.eks_cluster_name }} --region ${{ inputs.aws_region }} --query "cluster.resourcesVpcConfig.vpcId" --output text) \
-            --set image.tag="v2.13.3"
-
-      - name: Deploy cluster autoscaler
+      - name: Apply Karpenter NodePool and EC2NodeClass
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          sed "s/ACCOUNT_ID/$ACCOUNT_ID/g" cluster-autoscaler.yaml | kubectl apply -f -
-          sleep 30
-
-      - name: Wait for AWS Load Balancer Controller
-        run: |
-          echo "Waiting for AWS Load Balancer Controller to be ready..."
-          kubectl wait --for=condition=available --timeout=300s deployment/aws-load-balancer-controller -n kube-system
-          
-          echo "Waiting for webhook service to be ready..."
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=aws-load-balancer-controller -n kube-system --timeout=300s
-          
-          echo "Verifying webhook configurations..."
-          kubectl get validatingwebhookconfiguration aws-load-balancer-webhook
-          kubectl get mutatingwebhookconfiguration aws-load-balancer-webhook
-          sleep 30
-
-      - name: Install Metrics Server
-        run: |
-          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+          sed "s/CLUSTER_NAME/${{ inputs.eks_cluster_name }}/g" resources/manifests/karpenter-nodepool.yaml | kubectl apply -f -

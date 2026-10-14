@@ -1,6 +1,6 @@
 module "vpc" {
   source = "terraform-aws-modules/vpc/aws"
-  version = "5.21.0"
+  version = "6.7.3"
 
   name = var.vpc_name
   cidr = var.vpc_cidr
@@ -16,7 +16,11 @@ module "vpc" {
   map_public_ip_on_launch   = true
 
   tags = {
-    Terraform = "true"
+    Terraform   = "true"
     Environment = "dev"
+  }
+
+  private_subnet_tags = {
+    "karpenter.sh/discovery" = var.eks_cluster_name
   }
 }

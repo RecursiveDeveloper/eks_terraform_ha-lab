@@ -10,16 +10,9 @@ on:
         options:
           - 'deploy'
           - 'destroy'
-  # push:
-  #   paths-ignore:
-  #     - '.github/**'
-  #     - '.gitignore'
-  #     - 'README.md'
-  #   branches:
-  #     - main
 
 env:
-  TERRAFORM_VERSION: '1.12.2'
+  TERRAFORM_VERSION: '1.16.5'
   AWS_REGION: 'us-east-1'
   EKS_CLUSTER_NAME: "devopslab-eks"
 

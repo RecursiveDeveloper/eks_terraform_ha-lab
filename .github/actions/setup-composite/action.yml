@@ -54,3 +54,10 @@ runs:
         curl -sL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_checksums.txt" | grep $PLATFORM | sha256sum --check
         tar -xzf eksctl_$PLATFORM.tar.gz -C /tmp && rm eksctl_$PLATFORM.tar.gz
         sudo install -m 0755 /tmp/eksctl /usr/local/bin && rm /tmp/eksctl
+    
+    - name: Install helm
+      shell: bash
+      run: |
+        curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4
+        chmod 700 get_helm.sh
+        ./get_helm.sh

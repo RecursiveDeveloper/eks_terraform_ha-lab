@@ -22,3 +22,8 @@ variable "vpc_public_subnets" {
   description = "List of public subnet CIDR blocks"
   type        = list(string)
 }
+
+variable "eks_cluster_name" {
+  description = "EKS cluster name, used for Karpenter subnet discovery tag"
+  type        = string
+}

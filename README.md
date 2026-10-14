@@ -1,6 +1,6 @@
 # EKS Terraform Architecture
 
-This project provides a modular Terraform configuration to provision an AWS EKS (Elastic Kubernetes Service) cluster, including VPC networking and IAM resources.
+This project provides a modular Terraform configuration to provision an AWS EKS (Elastic Kubernetes Service) cluster, including VPC networking, IAM resources, and Karpenter for node autoscaling.
 
 ## Project Architecture
 ![image](https://raw.githubusercontent.com/RecursiveDeveloper/static-media-content/refs/heads/main/HA_Eks_Terraform-Diagram.jpg)
@@ -11,14 +11,21 @@ This project provides a modular Terraform configuration to provision an AWS EKS 
 eks-terraform/
 ├── main.tf
 ├── variables.tf
+├── provider.tf
 ├── terraform.auto.tfvars
 ├── README.md
+├── .github/
+│   ├── actions/
+│   │   └── setup-composite/
+│   │       └── action.yml
+│   └── workflows/
+│       ├── main.yml
+│       ├── deploy.yml
+│       └── destroy.yml
 ├── modules/
-│   ├── ecr/
-│   │   ├── main.tf
-│   │   └── variables.tf
 │   ├── eks/
 │   │   ├── main.tf
+│   │   ├── outputs.tf
 │   │   └── variables.tf
 │   ├── iam/
 │   │   ├── main.tf
@@ -27,133 +34,139 @@ eks-terraform/
 │       ├── main.tf
 │       ├── outputs.tf
 │       └── variables.tf
+└── resources/
+    ├── scripts/
+    │   ├── setup-lb-controller.sh
+    │   ├── install-karpenter.sh
+    │   ├── teardown-lb-controller.sh
+    │   └── teardown-karpenter.sh
+    └── manifests/
+        └── karpenter-nodepool.yaml
 ```
 
 ## Features
 
-- **VPC Module:** Provisions a VPC with public and private subnets across multiple AZs.
+- **VPC Module:** Provisions a VPC with public and private subnets across multiple AZs, tagged for Karpenter subnet discovery.
 - **IAM Module:** Creates IAM users, groups, and policies for DevOps access.
-- **ECR Module:** Creates container repositories for backend and frontend applications.
-- **EKS Module:** Deploys an EKS cluster with managed node groups.
+- **EKS Module:** Deploys an EKS cluster with managed node groups, EKS managed addons, Karpenter IAM roles, and access entries.
+
+## EKS Managed Addons
+
+The following addons are managed directly by EKS:
+
+| Addon | Purpose |
+|---|---|
+| `coredns` | Cluster DNS |
+| `kube-proxy` | Network proxy |
+| `vpc-cni` | Pod networking |
+| `aws-ebs-csi-driver` | EBS volume support |
+| `eks-pod-identity-agent` | Pod identity |
+| `metrics-server` | Resource metrics for HPA and kubectl top |
+
+## Node Autoscaling
+
+This project uses **Karpenter** for node autoscaling instead of the Cluster Autoscaler. Karpenter provisions EC2 instances directly via the EC2 fleet API, providing faster scale-up and better bin-packing than ASG-based scaling.
+
+The NodePool is configured with:
+- Architecture: `amd64`, OS: `linux`
+- Capacity type: `on-demand`
+- Instance categories: `c`, `m`, `r` (generation > 2)
+- Consolidation policy: `WhenEmptyOrUnderutilized`
+- Node expiry: 30 days
 
 ## Prerequisites
 
-Before deploying this Terraform configuration, ensure you have the following prerequisites in place:
+Before deploying this Terraform configuration, ensure the following are in place:
 
 ### 1. S3 Backend Bucket
 
-Create an S3 bucket named `tfm-unir-backend` in the `us-east-1` region to store the Terraform state file. This bucket is referenced in the [provider.tf](provider.tf) configuration.
+Create an S3 bucket named `tfm-unir-backend1` in `us-east-1` to store the Terraform state file:
 
 ```sh
-aws s3 mb s3://tfm-unir-backend --region us-east-1
+aws s3 mb s3://tfm-unir-backend1 --region us-east-1
 ```
 
-### 2. Environment Configuration Files
+### 2. GitHub Actions Secrets
 
-Create the following directory structure and environment files in your S3 bucket:
+Configure the following secrets in your GitHub repository:
 
-```
-tfm-unir-backend/
-├── backend/
-│   └── .env.docker
-└── frontend/
-    └── .env.docker
-```
+| Secret | Description |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | AWS access key ID |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret access key |
 
-Each `.env.docker` file should contain the necessary environment variables for your backend and frontend applications respectively.
-
-**Example backend/.env.docker:**
-```
-DATABASE_URL=your_database_url
-API_KEY=your_api_key
-ENVIRONMENT=production
-```
-
-**Example frontend/.env.docker:**
-```
-REACT_APP_API_URL=your_api_url
-REACT_APP_ENV=production
-```
+The IAM user behind these credentials needs permissions to create EKS, VPC, IAM, and EC2 resources.
 
 ## Usage
 
+### GitHub Actions Deployment
+
+Trigger the workflow manually from the **Actions** tab using `workflow_dispatch`. Select either `deploy` or `destroy` as the action.
+
+The workflow is defined in `.github/workflows/main.yml` and delegates to:
+- `.github/workflows/deploy.yml` — provisions infrastructure and installs controllers
+- `.github/workflows/destroy.yml` — tears down controllers and destroys infrastructure
+
 ### Local Deployment
 
-1. **Clone the repository:**
+1. **Configure your AWS credentials:**
+   ```sh
+   aws configure
+   ```
 
-2. **Configure your AWS credentials:**
-   Ensure your AWS credentials are set in your environment or via the AWS CLI.
+2. **Review and update variables:**
+   Edit `terraform.auto.tfvars` to match your desired configuration. Make sure to set `eks_cluster_name` since it is injected automatically by the workflow but has no default value:
+   ```hcl
+   eks_cluster_name = "devopslab-eks"
+   ```
 
-3. **Review and update variables:**
-   Edit `terraform.auto.tfvars` to match your desired configuration (VPC CIDR, subnets, cluster name, etc).
-
-4. **Initialize Terraform:**
+3. **Initialize Terraform:**
    ```sh
    terraform init
    ```
 
-5. **Plan the deployment:**
+4. **Plan the deployment:**
    ```sh
    terraform plan
    ```
 
-6. **Apply the configuration:**
+5. **Apply the configuration:**
    ```sh
    terraform apply
    ```
 
-### GitHub Actions Deployment
-
-For automated deployment using GitHub Actions, ensure the following repository secrets are configured:
-
-- `AWS_ACCESS_KEY_ID`: Your AWS access key ID
-- `AWS_SECRET_ACCESS_KEY`: Your AWS secret access key
-
-These secrets will be used by the GitHub Actions workflow to authenticate with AWS and deploy the infrastructure.
-
 ## Connecting to the EKS Cluster
 
-### As the IAM User Used to Deploy Terraform Resources
-
-If you deployed the EKS cluster using an IAM user (for example, your personal or CI/CD user), and this user has administrative or sufficient EKS permissions, you can connect to the cluster directly:
-
-1. **Ensure your AWS CLI is configured for the deployer IAM user:**
+1. **Update kubeconfig:**
    ```sh
-   aws configure --profile <deployer-profile>
+   aws eks update-kubeconfig --region us-east-1 --name <cluster-name>
    ```
-   Enter the access key and secret for the deployer IAM user.
 
-2. **Update kubeconfig for the EKS cluster:**
-   ```sh
-   aws eks update-kubeconfig --region <region> --name <cluster-name> --profile <deployer-profile>
-   ```
-   Replace `<region>`, `<cluster-name>`, and `<deployer-profile>` with your values.
-
-3. **Use kubectl to access the cluster:**
+2. **Verify access:**
    ```sh
    kubectl get nodes
    kubectl get pods -A
    ```
 
-**Note:**  
-The deployer IAM user is typically granted full access to the EKS cluster during creation and is automatically recognized by EKS for cluster administration.
-
----
-
-If you use a different IAM user or role, repeat the process with the appropriate credentials.
+The IAM user used to deploy the cluster is automatically granted admin access via `enable_cluster_creator_admin_permissions`. Additional DevOps users are granted cluster admin access through EKS access entries.
 
 ## Modules
 
-- [`modules/vpc`](modules/vpc/main.tf): Provisions the VPC and networking resources.
-- [`modules/iam`](modules/iam/main.tf): Manages IAM users, groups, and policies.
-- [`modules/ecr`](modules/ecr/main.tf): Creates ECR repositories for container images.
-- [`modules/eks`](modules/eks/main.tf): Deploys the EKS cluster and node groups.
+- [`modules/vpc`](modules/vpc/main.tf): Provisions the VPC, public/private subnets, NAT gateway, and Karpenter discovery tags.
+- [`modules/iam`](modules/iam/main.tf): Manages IAM users, groups, and policies for DevOps access.
+- [`modules/eks`](modules/eks/main.tf): Deploys the EKS cluster, managed node groups, EKS addons, Karpenter node and controller IAM roles, instance profile, and access entries.
 
 ## Requirements
 
-- Terraform >= 1.0
-- AWS CLI configured
-- AWS account with permissions to create EKS, VPC, and IAM resources
+| Tool | Version |
+|---|---|
+| Terraform | >= 1.16.5 |
+| AWS CLI | >= v2 |
+| kubectl | compatible with Kubernetes 1.33 |
+| helm | >= 3 |
+| eksctl | latest |
+
+AWS account permissions required: EKS, VPC, IAM, EC2.
 
 ## Customization
 
@@ -164,8 +177,14 @@ Edit [`terraform.auto.tfvars`](terraform.auto.tfvars) to set:
 ## Notes
 
 - The VPC and EKS modules use the official [terraform-aws-modules](https://github.com/terraform-aws-modules) for best practices.
-- IAM resources are created for demonstration and should be customized for production use.
+- IAM resources are created for demonstration purposes and should be reviewed before production use.
+- Karpenter interruption handling (SQS/EventBridge) is not configured since the cluster uses on-demand instances only.
+
+## Authors
+
+- [@RecursiveDeveloper](https://github.com/RecursiveDeveloper)
+
 
 ## License
 
-MIT
+[MIT](https://choosealicense.com/licenses/mit/)

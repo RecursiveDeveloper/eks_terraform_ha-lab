@@ -6,13 +6,7 @@ module "vpc" {
   vpc_azs             = var.vpc_azs
   vpc_private_subnets = var.vpc_private_subnets
   vpc_public_subnets  = var.vpc_public_subnets
-}
-
-module "ecr" {
-  source = "./modules/ecr"
-
-  ecr_backend_repo_name = var.ecr_backend_repo_name
-  ecr_frontend_repo_name = var.ecr_frontend_repo_name
+  eks_cluster_name    = var.eks_cluster_name
 }
 
 module "iam" {
@@ -31,7 +25,12 @@ module "eks" {
   eks_managed_node_groups = var.eks_managed_node_groups
 }
 
-output "cluster_autoscaler_role_arn" {
-  description = "ARN of the cluster autoscaler IAM role"
-  value       = module.eks.cluster_autoscaler_role_arn
+output "karpenter_node_role_arn" {
+  description = "ARN of the Karpenter node IAM role"
+  value       = module.eks.karpenter_node_role_arn
+}
+
+output "karpenter_controller_role_arn" {
+  description = "ARN of the Karpenter controller IRSA role"
+  value       = module.eks.karpenter_controller_role_arn
 }
