@@ -5,7 +5,7 @@ module "eks" {
   version = "21.29.0"
 
   name    = var.eks_cluster_name
-  kubernetes_version = "1.33"
+  kubernetes_version = "1.37"
 
   addons = {
     coredns                = {}
