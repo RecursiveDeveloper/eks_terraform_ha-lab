@@ -166,13 +166,35 @@ The IAM user used to deploy the cluster is automatically granted admin access vi
 
 ## Requirements
 
+### Tooling
+
 | Tool | Version |
 |---|---|
 | Terraform | >= 1.16.5 |
 | AWS CLI | >= v2 |
-| kubectl | compatible with Kubernetes 1.33 |
+| kubectl | compatible with Kubernetes 1.37 |
 | helm | >= 3 |
 | eksctl | latest |
+
+### Provider and Module Versions
+
+Pinned in [`provider.tf`](provider.tf) and the module sources:
+
+| Component | Version | Source |
+|---|---|---|
+| AWS provider (`hashicorp/aws`) | `6.69.0` | [`provider.tf`](provider.tf) |
+| `terraform-aws-modules/eks/aws` | `21.29.0` | [`modules/eks/main.tf`](modules/eks/main.tf) |
+| `terraform-aws-modules/vpc/aws` | `6.7.3` | [`modules/vpc/main.tf`](modules/vpc/main.tf) |
+
+### Kubernetes and Controllers
+
+| Component | Version | Source |
+|---|---|---|
+| Kubernetes (EKS) | `1.37` | `kubernetes_version` in [`modules/eks/main.tf`](modules/eks/main.tf) |
+| Karpenter | `1.15.0` | `KARPENTER_VERSION` in [`resources/scripts/install-karpenter.sh`](resources/scripts/install-karpenter.sh) |
+| AWS Load Balancer Controller | `v2.14.1` | `LB_CONTROLLER_VERSION` in [`resources/scripts/setup-lb-controller.sh`](resources/scripts/setup-lb-controller.sh) |
+
+EKS managed addons (`coredns`, `kube-proxy`, `vpc-cni`, `aws-ebs-csi-driver`, `eks-pod-identity-agent`, `metrics-server`) track the cluster's Kubernetes version automatically.
 
 AWS account permissions required: EKS, VPC, IAM, EC2.
 
