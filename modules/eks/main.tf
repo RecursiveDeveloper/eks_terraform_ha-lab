@@ -1,10 +1,12 @@
 data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
+data "aws_region" "current" {}
 
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "21.29.0"
 
-  name    = var.eks_cluster_name
+  name               = var.eks_cluster_name
   kubernetes_version = "1.37"
 
   addons = {
@@ -12,15 +14,15 @@ module "eks" {
     eks-pod-identity-agent = { before_compute = true }
     kube-proxy             = { before_compute = true }
     vpc-cni                = { before_compute = true }
-    aws-ebs-csi-driver     = {
+    aws-ebs-csi-driver = {
       service_account_role_arn = aws_iam_role.ebs_csi_driver.arn
     }
-    metrics-server         = {}
+    metrics-server = {}
   }
 
   enable_cluster_creator_admin_permissions = true
-  endpoint_public_access = true
-  authentication_mode = "API"
+  endpoint_public_access                   = true
+  authentication_mode                      = "API"
 
   vpc_id                   = var.vpc_id
   control_plane_subnet_ids = var.vpc_public_subnets
@@ -52,29 +54,27 @@ module "eks" {
     devops_access_entry_1 = {
       principal_arn = var.devops_user1_arn
       type          = "STANDARD"
+      policy_associations = {
+        admin = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
     },
     devops_access_entry_2 = {
       principal_arn = var.devops_user2_arn
       type          = "STANDARD"
+      policy_associations = {
+        admin = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
     }
-  }
-}
-
-resource "aws_eks_access_policy_association" "devops_user1_policy_association" {
-  cluster_name  = module.eks.cluster_name
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-  principal_arn = var.devops_user1_arn
-  access_scope {
-    type = "cluster"
-  }
-}
-
-resource "aws_eks_access_policy_association" "devops_user2_policy_association" {
-  cluster_name  = module.eks.cluster_name
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-  principal_arn = var.devops_user2_arn
-  access_scope {
-    type = "cluster"
   }
 }
 
@@ -154,29 +154,39 @@ resource "aws_eks_access_entry" "karpenter_node" {
 }
 
 # ── Karpenter Controller Role ──────────────────────────────────────────────────
-# IRSA role assumed by the Karpenter pod
+# Pod Identity role assumed by the Karpenter pod
 resource "aws_iam_role" "karpenter_controller" {
   name = "${var.eks_cluster_name}-karpenter"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRoleWithWebIdentity"
-      Effect = "Allow"
-      Principal = {
-        Federated = module.eks.oidc_provider_arn
-      }
+      Action = [
+        "sts:AssumeRole",
+        "sts:TagSession"
+      ]
+      Effect    = "Allow"
+      Principal = { Service = "pods.eks.amazonaws.com" }
       Condition = {
         StringEquals = {
-          "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub" = "system:serviceaccount:kube-system:karpenter"
-          "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud" = "sts.amazonaws.com"
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+        ArnEquals = {
+          "aws:SourceArn" = module.eks.cluster_arn
         }
       }
     }]
   })
 }
 
-# Node lifecycle: launch, terminate, describe EC2 instances
+resource "aws_eks_pod_identity_association" "karpenter_controller" {
+  cluster_name    = module.eks.cluster_name
+  namespace       = "kube-system"
+  service_account = "karpenter"
+  role_arn        = aws_iam_role.karpenter_controller.arn
+}
+
+# Node lifecycle policy, matching the Karpenter v1.15.0 official CloudFormation policy
 resource "aws_iam_policy" "karpenter_node_lifecycle" {
   name = "KarpenterControllerNodeLifecyclePolicy-${var.eks_cluster_name}"
 
@@ -184,54 +194,111 @@ resource "aws_iam_policy" "karpenter_node_lifecycle" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowScopedEC2InstanceActions"
+        Sid    = "AllowScopedEC2InstanceAccessActions"
         Effect = "Allow"
-        Action = [
-          "ec2:RunInstances",
-          "ec2:CreateFleet"
-        ]
+        Action = ["ec2:RunInstances", "ec2:CreateFleet"]
         Resource = [
-          "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:launch-template/*",
-          "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:security-group/*",
-          "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:subnet/*",
-          "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:instance/*",
-          "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:volume/*",
-          "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:network-interface/*",
-          "arn:aws:ec2:*::image/*",
-          "arn:aws:ec2:*::snapshot/*"
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}::image/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}::snapshot/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:security-group/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:subnet/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:capacity-reservation/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:placement-group/*"
         ]
       },
       {
-        Sid    = "AllowScopedEC2TerminationActions"
-        Effect = "Allow"
-        Action = [
-          "ec2:TerminateInstances",
-          "ec2:DeleteLaunchTemplate"
-        ]
-        Resource = "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:instance/*"
+        Sid      = "AllowScopedEC2LaunchTemplateAccessActions"
+        Effect   = "Allow"
+        Action   = ["ec2:RunInstances", "ec2:CreateFleet"]
+        Resource = "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:launch-template/*"
         Condition = {
+          StringEquals = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.eks_cluster_name}" = "owned"
+          }
           StringLike = {
-            "ec2:ResourceTag/karpenter.sh/nodepool" = "*"
+            "aws:ResourceTag/karpenter.sh/nodepool" = "*"
           }
         }
       },
       {
-        Sid    = "AllowLaunchTemplateManagement"
+        Sid    = "AllowScopedEC2InstanceActionsWithTags"
         Effect = "Allow"
-        Action = [
-          "ec2:CreateLaunchTemplate",
-          "ec2:CreateTags"
+        Action = ["ec2:RunInstances", "ec2:CreateFleet", "ec2:CreateLaunchTemplate"]
+        Resource = [
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:fleet/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:instance/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:volume/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:network-interface/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:launch-template/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:spot-instances-request/*"
         ]
-        Resource = "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:launch-template/*"
-      },
-      {
-        Sid    = "AllowInstanceTagging"
-        Effect = "Allow"
-        Action = "ec2:CreateTags"
-        Resource = "arn:aws:ec2:*:${data.aws_caller_identity.current.account_id}:instance/*"
         Condition = {
           StringEquals = {
-            "ec2:CreateAction" = ["RunInstances", "CreateFleet"]
+            "aws:RequestTag/kubernetes.io/cluster/${var.eks_cluster_name}" = "owned"
+            "aws:RequestTag/eks:eks-cluster-name"                          = var.eks_cluster_name
+          }
+          StringLike = {
+            "aws:RequestTag/karpenter.sh/nodepool" = "*"
+          }
+        }
+      },
+      {
+        Sid    = "AllowScopedResourceCreationTagging"
+        Effect = "Allow"
+        Action = "ec2:CreateTags"
+        Resource = [
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:fleet/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:instance/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:volume/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:network-interface/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:launch-template/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:spot-instances-request/*"
+        ]
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/kubernetes.io/cluster/${var.eks_cluster_name}" = "owned"
+            "aws:RequestTag/eks:eks-cluster-name"                          = var.eks_cluster_name
+            "ec2:CreateAction"                                             = ["RunInstances", "CreateFleet", "CreateLaunchTemplate"]
+          }
+          StringLike = {
+            "aws:RequestTag/karpenter.sh/nodepool" = "*"
+          }
+        }
+      },
+      {
+        Sid      = "AllowScopedResourceTagging"
+        Effect   = "Allow"
+        Action   = "ec2:CreateTags"
+        Resource = "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:instance/*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.eks_cluster_name}" = "owned"
+          }
+          StringLike = {
+            "aws:ResourceTag/karpenter.sh/nodepool" = "*"
+          }
+          StringEqualsIfExists = {
+            "aws:RequestTag/eks:eks-cluster-name" = var.eks_cluster_name
+          }
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["eks:eks-cluster-name", "karpenter.sh/nodeclaim", "Name"]
+          }
+        }
+      },
+      {
+        Sid    = "AllowScopedDeletion"
+        Effect = "Allow"
+        Action = ["ec2:TerminateInstances", "ec2:DeleteLaunchTemplate"]
+        Resource = [
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:instance/*",
+          "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:*:launch-template/*"
+        ]
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.eks_cluster_name}" = "owned"
+          }
+          StringLike = {
+            "aws:ResourceTag/karpenter.sh/nodepool" = "*"
           }
         }
       }
@@ -239,68 +306,148 @@ resource "aws_iam_policy" "karpenter_node_lifecycle" {
   })
 }
 
-# IAM integration: pass the node role to EC2 instances
+# IAM integration, matching the Karpenter v1.15.0 official CloudFormation policy
 resource "aws_iam_policy" "karpenter_iam_integration" {
   name = "KarpenterControllerIAMIntegrationPolicy-${var.eks_cluster_name}"
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid    = "AllowPassNodeRole"
-      Effect = "Allow"
-      Action = "iam:PassRole"
-      Resource = aws_iam_role.karpenter_node.arn
-      Condition = {
-        StringEquals = {
-          "iam:PassedToService" = "ec2.amazonaws.com"
+    Statement = [
+      {
+        Sid      = "AllowPassingInstanceRole"
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = aws_iam_role.karpenter_node.arn
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = ["ec2.amazonaws.com", "ec2.amazonaws.com.cn"]
+          }
+        }
+      },
+      {
+        Sid      = "AllowScopedInstanceProfileCreationActions"
+        Effect   = "Allow"
+        Action   = ["iam:CreateInstanceProfile"]
+        Resource = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:instance-profile/*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/kubernetes.io/cluster/${var.eks_cluster_name}" = "owned"
+            "aws:RequestTag/eks:eks-cluster-name"                          = var.eks_cluster_name
+            "aws:RequestTag/topology.kubernetes.io/region"                 = data.aws_region.current.region
+          }
+          StringLike = {
+            "aws:RequestTag/karpenter.k8s.aws/ec2nodeclass" = "*"
+          }
+        }
+      },
+      {
+        Sid      = "AllowScopedInstanceProfileTagActions"
+        Effect   = "Allow"
+        Action   = ["iam:TagInstanceProfile"]
+        Resource = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:instance-profile/*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.eks_cluster_name}" = "owned"
+            "aws:ResourceTag/topology.kubernetes.io/region"                 = data.aws_region.current.region
+            "aws:RequestTag/kubernetes.io/cluster/${var.eks_cluster_name}"  = "owned"
+            "aws:RequestTag/eks:eks-cluster-name"                           = var.eks_cluster_name
+            "aws:RequestTag/topology.kubernetes.io/region"                  = data.aws_region.current.region
+          }
+          StringLike = {
+            "aws:ResourceTag/karpenter.k8s.aws/ec2nodeclass" = "*"
+            "aws:RequestTag/karpenter.k8s.aws/ec2nodeclass"  = "*"
+          }
+        }
+      },
+      {
+        Sid      = "AllowScopedInstanceProfileActions"
+        Effect   = "Allow"
+        Action   = ["iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:DeleteInstanceProfile"]
+        Resource = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:instance-profile/*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.eks_cluster_name}" = "owned"
+            "aws:ResourceTag/topology.kubernetes.io/region"                 = data.aws_region.current.region
+          }
+          StringLike = {
+            "aws:ResourceTag/karpenter.k8s.aws/ec2nodeclass" = "*"
+          }
         }
       }
-    }]
+    ]
   })
 }
 
-# EKS integration: describe cluster and node groups
+# EKS integration, matching the Karpenter v1.15.0 official CloudFormation policy
 resource "aws_iam_policy" "karpenter_eks_integration" {
   name = "KarpenterControllerEKSIntegrationPolicy-${var.eks_cluster_name}"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid    = "AllowEKSDescribe"
-      Effect = "Allow"
-      Action = [
-        "eks:DescribeCluster",
-        "eks:DescribeNodegroup"
-      ]
-      Resource = "arn:aws:eks:*:${data.aws_caller_identity.current.account_id}:cluster/${var.eks_cluster_name}"
+      Sid      = "AllowAPIServerEndpointDiscovery"
+      Effect   = "Allow"
+      Action   = "eks:DescribeCluster"
+      Resource = "arn:${data.aws_partition.current.partition}:eks:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:cluster/${var.eks_cluster_name}"
     }]
   })
 }
 
-# Resource discovery: subnets, security groups, instance types, AMIs
+# Resource discovery, matching the Karpenter v1.15.0 official CloudFormation policy
 resource "aws_iam_policy" "karpenter_resource_discovery" {
   name = "KarpenterControllerResourceDiscoveryPolicy-${var.eks_cluster_name}"
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid    = "AllowResourceDiscovery"
-      Effect = "Allow"
-      Action = [
-        "ec2:DescribeAvailabilityZones",
-        "ec2:DescribeImages",
-        "ec2:DescribeInstances",
-        "ec2:DescribeInstanceTypeOfferings",
-        "ec2:DescribeInstanceTypes",
-        "ec2:DescribeLaunchTemplates",
-        "ec2:DescribeSecurityGroups",
-        "ec2:DescribeSpotPriceHistory",
-        "ec2:DescribeSubnets",
-        "pricing:GetProducts",
-        "ssm:GetParameter"
-      ]
-      Resource = "*"
-    }]
+    Statement = [
+      {
+        Sid    = "AllowRegionalReadActions"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeCapacityReservations",
+          "ec2:DescribeImages",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceStatus",
+          "ec2:DescribeInstanceTypeOfferings",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeLaunchTemplates",
+          "ec2:DescribePlacementGroups",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSpotPriceHistory",
+          "ec2:DescribeSubnets"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = data.aws_region.current.region
+          }
+        }
+      },
+      {
+        Sid      = "AllowSSMReadActions"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}::parameter/aws/service/*"
+      },
+      {
+        Sid      = "AllowPricingReadActions"
+        Effect   = "Allow"
+        Action   = "pricing:GetProducts"
+        Resource = "*"
+      },
+      {
+        Sid      = "AllowUnscopedInstanceProfileListAction"
+        Effect   = "Allow"
+        Action   = "iam:ListInstanceProfiles"
+        Resource = "*"
+      },
+      {
+        Sid      = "AllowInstanceProfileReadActions"
+        Effect   = "Allow"
+        Action   = "iam:GetInstanceProfile"
+        Resource = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:instance-profile/*"
+      }
+    ]
   })
 }
 
