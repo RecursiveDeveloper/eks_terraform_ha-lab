@@ -52,7 +52,7 @@ jobs:
       - name: Teardown AWS Load Balancer Controller
         run: |
           chmod +x resources/scripts/teardown-lb-controller.sh
-          ./resources/scripts/teardown-lb-controller.sh ${{ inputs.aws_region }}
+          ./resources/scripts/teardown-lb-controller.sh ${{ inputs.eks_cluster_name }} ${{ inputs.aws_region }}
 
       - name: Teardown Karpenter
         run: |

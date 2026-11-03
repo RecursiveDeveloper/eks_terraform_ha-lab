@@ -20,19 +20,22 @@ module "eks" {
     metrics-server = {}
   }
 
+  enabled_log_types = [
+    "audit",
+    "api",
+    "authenticator",
+    "controllerManager",
+    "scheduler",
+  ]
   enable_cluster_creator_admin_permissions = true
   endpoint_public_access                   = true
   authentication_mode                      = "API"
 
   vpc_id                   = var.vpc_id
-  control_plane_subnet_ids = var.vpc_public_subnets
+  control_plane_subnet_ids = var.vpc_private_subnets
   subnet_ids               = var.vpc_private_subnets
 
   eks_managed_node_groups = var.eks_managed_node_groups
-
-  tags = {
-    "karpenter.sh/discovery" = var.eks_cluster_name
-  }
 
   node_security_group_tags = {
     "karpenter.sh/discovery" = var.eks_cluster_name
@@ -105,6 +108,38 @@ resource "aws_iam_role_policy_attachment" "ebs_csi_policy" {
   role       = aws_iam_role.ebs_csi_driver.name
 }
 
+# AWS Load Balancer Controller IRSA role and policy (policy from v2.14.1)
+resource "aws_iam_policy" "aws_load_balancer_controller" {
+  name   = "${var.eks_cluster_name}-AWSLoadBalancerControllerPolicy"
+  policy = file("${path.module}/../../resources/policies/aws-load-balancer-controller-iam-policy-v2.14.1.json")
+}
+
+resource "aws_iam_role" "aws_load_balancer_controller" {
+  name = "${var.eks_cluster_name}-aws-load-balancer-controller"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Principal = {
+        Federated = module.eks.oidc_provider_arn
+      }
+      Condition = {
+        StringEquals = {
+          "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
+          "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "aws_load_balancer_controller" {
+  policy_arn = aws_iam_policy.aws_load_balancer_controller.arn
+  role       = aws_iam_role.aws_load_balancer_controller.name
+}
+
 # ── Karpenter Node Role ────────────────────────────────────────────────────────
 # Role assumed by EC2 instances that Karpenter launches
 resource "aws_iam_role" "karpenter_node" {
@@ -138,12 +173,6 @@ resource "aws_iam_role_policy_attachment" "karpenter_node_ecr" {
 resource "aws_iam_role_policy_attachment" "karpenter_node_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
   role       = aws_iam_role.karpenter_node.name
-}
-
-# Instance profile so EC2 instances can assume the node role
-resource "aws_iam_instance_profile" "karpenter_node" {
-  name = "KarpenterNodeInstanceProfile-${var.eks_cluster_name}"
-  role = aws_iam_role.karpenter_node.name
 }
 
 # Allow Karpenter nodes to connect to the cluster

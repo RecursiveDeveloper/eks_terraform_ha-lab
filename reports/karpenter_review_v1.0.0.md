@@ -6,7 +6,7 @@
 **Scope:** Terraform modules, Karpenter IAM/installation, NodePool/EC2NodeClass, VPC, CI/CD workflows, teardown scripts  
 **Method:** Manual review + `terraform validate` + version checks against upstream registries/repositories
 
-> **Implementation update (2026-10-30):** KAR-01 was implemented using EKS Pod Identity, and KAR-02 was updated to match the official Karpenter v1.15.0 CloudFormation IAM policies. See `modules/eks/main.tf`. `terraform validate` and `terraform fmt -check modules/eks/main.tf` pass. KAR-03's unused Terraform-created instance profile remains a cleanup item; the `spec.role` flow is now authorized by the official instance-profile permissions. Apply the changes and verify in-cluster before considering Karpenter operational.
+> **Implementation update (2026-11-03):** KAR-01 through KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22, KAR-25 and KAR-26 are implemented. KAR-06, KAR-11, KAR-13 and KAR-21 are accepted lab trade-offs. KAR-23 backend settings are implemented, with bucket-level settings to verify; KAR-24's lock file still needs a commit. See the relevant KAR sections for implementation details.
 
 ---
 
@@ -14,13 +14,13 @@
 
 The overall architecture is sound: a VPC with private subnets for nodes, an EKS managed node group for system components, Karpenter for workload capacity, and EKS managed addons. `terraform validate` passes and the pinned module/provider versions resolve correctly.
 
-The initial review identified three independent blockers. **KAR-01 (controller AWS identity) and KAR-02 (controller IAM permissions) have since been implemented.** KAR-03's `spec.role` approach is now covered by the official instance-profile permissions; the Terraform-created profile is redundant, not a provisioning blocker:
+The initial review identified three independent blockers. **KAR-01 (controller AWS identity) and KAR-02 (controller IAM permissions) have since been implemented.** KAR-03's `spec.role` approach is now covered by the official instance-profile permissions and the redundant Terraform-created profile has been removed:
 
 1. **Resolved — KAR-01:** The Karpenter controller pod had no AWS identity. It now uses EKS Pod Identity.
 2. **Implemented — KAR-02:** Controller IAM policies now match the official Karpenter v1.15.0 policy statements, including `CreateFleet`, scoped resource tagging/deletion, instance-profile management and regional discovery.
-3. **Cleanup — KAR-03:** `EC2NodeClass` uses `spec.role`, so Karpenter manages its instance profile. The policy now supports this; `aws_iam_instance_profile.karpenter_node` remains unused and can be removed as cleanup.
+3. **Resolved — KAR-03:** `EC2NodeClass` uses `spec.role`, so Karpenter manages its instance profile. The unused `aws_iam_instance_profile.karpenter_node` has been removed.
 
-Beyond Karpenter, there are HA, security, teardown and CI hygiene issues. The repository is named `ha-lab`, but it currently has several single points of failure (single NAT gateway, one managed node, one Karpenter replica).
+Beyond Karpenter, there are HA, security, teardown and CI hygiene issues. KAR-04, KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22 and KAR-25 have been implemented. KAR-11 and KAR-13 are accepted lab risks. The repository still has limitations such as a single NAT gateway and no strict per-AZ capacity guarantee.
 
 ### Severity Summary
 
@@ -32,7 +32,7 @@ Beyond Karpenter, there are HA, security, teardown and CI hygiene issues. The re
 | **P3 — Low / Cost** | 5 | Cost control and Karpenter tuning |
 | **P4 — Hygiene** | 11 | Terraform/CI/repository maintainability |
 
-> **Status note (2026-10-30):** Counts reflect the initial review. KAR-01, KAR-02, KAR-04 and KAR-26 are resolved; KAR-03 is non-blocking; KAR-06 and KAR-21 are accepted for this lab. The remaining findings are unchanged.
+> **Status note (2026-11-03):** Counts reflect the initial review. KAR-01 through KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22, KAR-25 and KAR-26 are implemented; KAR-06, KAR-11, KAR-13 and KAR-21 are accepted for this lab. KAR-23 needs bucket-level verification, and KAR-24's lock file awaits commit.
 
 ---
 
@@ -42,22 +42,16 @@ Beyond Karpenter, there are HA, security, teardown and CI hygiene issues. The re
 |---|---|
 | `terraform validate` with Terraform `1.16.5` | ✅ Passed |
 | `terraform fmt -check modules/eks/main.tf` | ✅ Passed after implementation |
-| AWS provider `6.69.0` exists | ✅ |
-| EKS module `21.29.0` exists | ✅ |
-| VPC module `6.7.3` exists | ✅ |
 | Karpenter `1.15.0` exists | ✅ |
 | Karpenter ↔ Kubernetes compatibility | ✅ K8s `1.37` requires Karpenter `1.15.x` per the current compatibility matrix |
-| Karpenter IAM policy vs. official v1.15.0 policy | ✅ Implemented (see KAR-02) |
-| Controller AWS identity wiring | ✅ Pod Identity configured (see KAR-01) |
-| Access entry policy association wiring | ✅ Module-native `policy_associations` (see KAR-04) |
 
-> **Note:** `terraform init` created `.terraform.lock.hcl` during validation, but it is ignored by `.gitignore` (see KAR-24). The file was removed after validation to leave the working tree clean.
+> **Note:** `.terraform.lock.hcl` is now allowed by `.gitignore` and present in the working tree; commit it to preserve the provider selections (KAR-24).
 
 ---
 
 # P0 — Blockers
 
-## KAR-01 — Karpenter controller has no AWS identity — RESOLVED
+## KAR-01 — Karpenter controller has no AWS identity — RESOLVED ✅
 
 **Status: RESOLVED (2026-10-30) — implemented with EKS Pod Identity.**
 
@@ -87,7 +81,7 @@ kubectl get nodeclaims
 
 ---
 
-## KAR-02 — Controller IAM policy is missing required permissions — IMPLEMENTED
+## KAR-02 — Controller IAM policy is missing required permissions — IMPLEMENTED ✅
 
 **Status: IMPLEMENTED (2026-10-30).**
 
@@ -112,21 +106,20 @@ Reference:
 
 ---
 
-## KAR-03 — `EC2NodeClass` uses `role`, but the created instance profile is unused — NON-BLOCKING
+## KAR-03 — `EC2NodeClass` uses `role`, but the created instance profile is unused — RESOLVED ✅
 
-**Status (2026-10-30):** No longer blocks provisioning. The official IAM integration policy added for KAR-02 grants the scoped instance-profile permissions that `spec.role` requires.
+**Status (2026-10-30):** RESOLVED. The official IAM integration policy added for KAR-02 grants the scoped instance-profile permissions that `spec.role` requires, and the unused Terraform-created instance profile has been removed.
 
-**Files:** `resources/manifests/karpenter-nodepool.yaml:40`, `modules/eks/main.tf:144-147`
+**Files:** `resources/manifests/karpenter-nodepool.yaml:40`, `modules/eks/main.tf`
 
 ### Current implementation
 
 - `resources/manifests/karpenter-nodepool.yaml` sets `role: "KarpenterNodeRole-CLUSTER_NAME"`, so Karpenter manages a generated instance profile for that role.
-- `modules/eks/main.tf` still creates `aws_iam_instance_profile.karpenter_node`, which the manifest does not reference.
-- Optional cleanup: remove the unused `aws_iam_instance_profile.karpenter_node`.
+- `modules/eks/main.tf` no longer creates the unused `aws_iam_instance_profile.karpenter_node`.
 
 ---
 
-## KAR-04 — Access policy association can race the access entry — RESOLVED
+## KAR-04 — Access policy association can race the access entry — RESOLVED ✅
 
 **Status: RESOLVED (2026-10-30).**
 
@@ -162,47 +155,27 @@ Validation: `terraform validate` and `terraform fmt -check modules/eks/main.tf` 
 
 # P1 — High
 
-## KAR-05 — Discovery tag is applied to the cluster security group too
+## KAR-05 — Discovery tag is applied to the cluster security group too — RESOLVED ✅
 
-**File:** `modules/eks/main.tf:31-37`  
-**Impact:** Karpenter attaches an unintended extra security group to every node.
+**Status: RESOLVED (2026-11-03).**
 
-### What happens
+**File:** `modules/eks/main.tf`
+
+### Implementation
+
+Removed `karpenter.sh/discovery` from the module's generic `tags` map. The tag now exists only in `node_security_group_tags`:
 
 ```hcl
-tags = {
-  "karpenter.sh/discovery" = var.eks_cluster_name
-}
-
 node_security_group_tags = {
   "karpenter.sh/discovery" = var.eks_cluster_name
 }
 ```
 
-The `terraform-aws-modules/eks/aws` module merges `var.tags` into both the cluster security group (`main.tf` in the module) and the node security group. As a result, `securityGroupSelectorTerms` in the `EC2NodeClass` matches **both** SGs, and Karpenter attaches both to launched nodes.
-
-This usually still works, but it is not the documented setup and can cause surprising SG rule interactions.
-
-### Fix
-
-Remove `karpenter.sh/discovery` from the generic `tags` map and keep it only in `node_security_group_tags`:
-
-```hcl
-tags = {
-  Terraform   = "true"
-  Environment = "dev"
-}
-
-node_security_group_tags = {
-  "karpenter.sh/discovery" = var.eks_cluster_name
-}
-```
-
-The cluster itself does not need the discovery tag.
+As a result, `securityGroupSelectorTerms` in the `EC2NodeClass` matches only the node security group. Validation: `terraform validate` and `terraform fmt -check modules/eks/main.tf` pass.
 
 ---
 
-## KAR-06 — No interruption queue (SQS/EventBridge) — ACCEPTED (lab, no spot)
+## KAR-06 — No interruption queue (SQS/EventBridge) — ACCEPTED (lab, no spot) ✅
 
 **Status (2026-10-30):** Accepted risk for this lab. The NodePool is on-demand only and there is no plan to use spot capacity, so spot interruption handling is not required.
 
@@ -214,339 +187,190 @@ The cluster itself does not need the discovery tag.
 
 ---
 
-## KAR-07 — Teardown can leave EC2 instances and block VPC deletion
+## KAR-07 — Teardown can leave EC2 instances and block VPC deletion — RESOLVED ✅
 
-**File:** `resources/scripts/teardown-karpenter.sh:6-10`  
-**Impact:** `terraform destroy` fails on leftover ENIs/instances; orphaned EC2 resources incur cost.
+**Status: RESOLVED (2026-11-03).**
 
-### What happens
+**File:** `resources/scripts/teardown-karpenter.sh`
 
-```sh
-kubectl delete nodeclaims --all || true
-kubectl delete nodepools --all || true
-kubectl delete ec2nodeclasses --all || true
-echo "Waiting for Karpenter nodes to drain..."
-sleep 30
-```
+### Implementation
 
-Problems:
+The teardown script now:
 
-- `kubectl delete` is asynchronous; 30 seconds is not a reliable wait.
-- Deleting `EC2NodeClass` immediately after `NodePool` can break Karpenter's cleanup, because it may still need the node class to resolve instance profiles/launch templates.
-- Karpenter-launched instances are not in Terraform state, so Terraform will not clean them up.
-- Leftover instances/ENIs block VPC deletion in `terraform destroy`.
+- deletes NodePools without blocking, then waits up to 10 minutes for NodeClaims to be deleted;
+- deletes any remaining NodeClaims and waits up to 5 minutes;
+- deletes EC2NodeClasses only after NodeClaims are gone;
+- polls for Karpenter-tagged EC2 instances in `pending`, `running`, `stopping` or `stopped` state and waits until none remain, using a 10-minute default timeout (`INSTANCE_WAIT_SECONDS` and `INSTANCE_POLL_SECONDS` override the timeout and poll interval);
+- uninstalls Karpenter only after the instances are gone.
 
-### Fix
-
-Wait for NodeClaims to be fully deleted before deleting the `EC2NodeClass`, then wait for instances to terminate:
-
-```sh
-kubectl delete nodepools --all || true
-kubectl wait --for=delete nodeclaim --all --timeout=10m || true
-kubectl delete ec2nodeclasses --all || true
-
-# Optional: verify no Karpenter-tagged instances remain
-aws ec2 describe-instances \
-  --filters "Name=tag:karpenter.sh/nodepool,Values=*" \
-            "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-  --query 'Reservations[].Instances[].InstanceId' \
-  --output text
-```
-
-Also consider waiting for ENIs to disappear before `terraform destroy`.
+If the instance query fails or times out, the script prints a warning and continues. Validation: `bash -n resources/scripts/teardown-karpenter.sh` passes.
 
 ---
 
-## KAR-08 — LB teardown hardcodes a load balancer name
+## KAR-08 — LB teardown hardcodes a load balancer name — RESOLVED ✅
 
-**File:** `resources/scripts/teardown-lb-controller.sh:24`  
-**Impact:** The script deletes nothing (or the wrong LB) in this cluster.
+**Status: RESOLVED (2026-11-03).**
 
-### What happens
+**Files:** `resources/scripts/teardown-lb-controller.sh`, `.github/workflows/destroy.yml`
 
-```sh
-LB_ARN=$(aws elbv2 describe-load-balancers \
-  --query "LoadBalancers[?contains(LoadBalancerName, 'shareduniralb')].LoadBalancerArn" \
-  --output text 2>/dev/null || echo "")
-```
+### Implementation
 
-`shareduniralb` is a leftover from another project.
-
-### Fix
-
-Filter by the AWS Load Balancer Controller cluster tag instead:
-
-```sh
-LB_ARNS=$(aws elbv2 describe-load-balancers \
-  --query "LoadBalancers[?Tags[?Key=='elbv2.k8s.aws/cluster' && Value=='${CLUSTER_NAME}']].LoadBalancerArn" \
-  --output text)
-```
-
-Pass the cluster name to the script (it currently only receives the region).
+The teardown script now receives the cluster name and AWS region, enumerates load balancers in that region, and checks each resource's `elbv2.k8s.aws/cluster` tag using `aws elbv2 describe-tags`. It deletes and waits for deletion only for load balancers tagged for the target cluster. The hardcoded `shareduniralb` name is removed. `aws elbv2 describe-load-balancers` is used only to retrieve ARNs; tags are queried separately because that operation does not include tags.
 
 ---
 
-## KAR-09 — Load Balancer Controller IAM is outside Terraform
+## KAR-09 — Load Balancer Controller IAM is outside Terraform — RESOLVED ✅
 
-**File:** `resources/scripts/setup-lb-controller.sh:15-33`  
-**Impact:** Orphaned IAM policy/role after `terraform destroy`.
+**Status: RESOLVED (2026-11-03).**
 
-### What happens
+**Files:** `modules/eks/main.tf`, `resources/policies/aws-load-balancer-controller-iam-policy-v2.14.1.json`, `resources/scripts/setup-lb-controller.sh`
 
-The script creates:
+### Implementation
 
-- An IAM policy named `AWSLoadBalancerControllerIAMPolicy`
-- An IRSA role via `eksctl create iamserviceaccount`
-
-Neither is tracked by Terraform, and `teardown-lb-controller.sh` does not delete them. After destroying the cluster, the OIDC provider is gone but the role/policy remain.
-
-### Fix
-
-Manage the LBC IAM policy and IRSA role in Terraform, or explicitly delete them in `teardown-lb-controller.sh`. Prefer Terraform so the destroy is complete.
+- Terraform manages the versioned v2.14.1 LBC IAM policy, IRSA role, OIDC trust restricted to the `kube-system/aws-load-balancer-controller` service account, and policy attachment.
+- The setup script retrieves that Terraform-created role and annotates the Kubernetes service account with its ARN; it no longer creates IAM resources with `aws iam` or `eksctl`.
+- The role and policy are removed with the Terraform destroy.
 
 ---
 
-## KAR-10 — LBC setup downloads unpinned CRDs and writes files into the repo
+## KAR-10 — LBC setup downloads unpinned CRDs and writes files into the repo — RESOLVED ✅
 
-**File:** `resources/scripts/setup-lb-controller.sh:17,46`  
-**Impact:** Non-reproducible installs; stray files in the workspace.
+**Status: RESOLVED (2026-11-03).**
 
-### What happens
+**File:** `resources/scripts/setup-lb-controller.sh`
 
-```sh
-curl -sO https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/${LB_CONTROLLER_VERSION}/docs/install/iam_policy.json
-...
-wget -q https://raw.githubusercontent.com/aws/eks-charts/master/stable/aws-load-balancer-controller/crds/crds.yaml
-```
+### Implementation
 
-- The CRDs come from `master`, not from the pinned `v2.14.1` release.
-- `curl -sO` and `wget` write `iam_policy.json` and `crds.yaml` into the current directory.
-- `curl` without `-f` can silently save an HTML error page as JSON.
-
-### Fix
-
-- Pin the CRD source to the same version as the controller.
-- Use `curl -fsSL` and a temporary directory (`mktemp -d`).
-- Clean up with `trap 'rm -rf "$tmpdir"' EXIT`.
+- The controller image is pinned to `v2.14.1`, and the Helm chart is pinned to `1.14.1` (the chart release for controller `v2.14.1`).
+- Both CRDs are fetched from the controller's `v2.14.1` Git tag with `curl -fsSL`.
+- Downloads are stored under a `mktemp` directory and removed by an exit trap.
+- IAM policy JSON is a checked-in, versioned file consumed by Terraform rather than downloaded into the working directory during setup.
 
 ---
 
 # P2 — Medium (HA and security)
 
-## KAR-11 — Single NAT gateway
+## KAR-11 — Single NAT gateway — ACCEPTED (lab, cost trade-off) ✅
 
-**File:** `modules/vpc/main.tf:15`  
-**Impact:** An AZ failure removes egress for all private subnets.
+**Status (2026-11-03):** Accepted risk for this lab.
 
-```hcl
-single_nat_gateway = true
-```
+**File:** `modules/vpc/main.tf`
 
-Nodes in private subnets need NAT (or VPC endpoints) to reach ECR, STS, SSM and the EKS API. If the NAT gateway's AZ fails, every private subnet loses egress.
-
-### Recommendation
-
-- For true HA: `single_nat_gateway = false` (one NAT per AZ).
-- Or add VPC endpoints for `ecr.api`, `ecr.dkr`, `s3`, `sts`, `ssm`, `eks` and keep a single NAT as a fallback.
-- If this is a cost-controlled lab, document the trade-off explicitly.
+**Decision:** Keep `single_nat_gateway = true` to limit lab costs. This is not a highly available NAT design: an outage in the NAT gateway's AZ can remove egress from private subnets. Revisit if the cluster becomes production or HA-critical.
 
 ---
 
-## KAR-12 — Single managed node and single Karpenter replica
+## KAR-12 — Managed node and Karpenter replica redundancy — IMPLEMENTED ✅
 
-**Files:** `terraform.auto.tfvars:12-14`, `resources/scripts/install-karpenter.sh:14`  
-**Impact:** No redundancy for system addons or the autoscaler itself.
+**Files:** `terraform.auto.tfvars`, `resources/scripts/install-karpenter.sh`
 
-```hcl
-min_size     = 1
-max_size     = 1
-desired_size = 1
-```
+**Current configuration checked and updated (2026-11-03):**
 
-```sh
---set replicas=1
-```
+- The managed node group is configured with `min_size = 2`, `desired_size = 2`, and `max_size = 3` using `t3a.medium` instances. It receives the three private subnets in three Availability Zones, so the Auto Scaling group can balance the minimum two nodes across AZs.
+- Karpenter runs two replicas with an explicit zone topology spread constraint (`maxSkew: 1`, `DoNotSchedule`). The chart also has required pod anti-affinity across nodes.
+- The Karpenter PodDisruptionBudget is explicitly set to `maxUnavailable: 1`, allowing at most one controller replica to be voluntarily disrupted at a time.
 
-CoreDNS, the AWS Load Balancer Controller, the Pod Identity agent and Karpenter all compete for one `t3a.medium`. If that node is drained or replaced, Karpenter cannot provision replacements.
-
-### Recommendation
-
-- Use at least 2-3 managed nodes across AZs for system components, or create a dedicated system NodePool with taints.
-- Run 2 Karpenter replicas with topology spread constraints and a PodDisruptionBudget.
-- Ensure the managed node group has enough capacity for `controller.resources.requests` (currently 1 CPU / 1 GiB).
+The managed group now retains at least two nodes, while the two controllers are spread across zones and protected from simultaneous voluntary eviction. Auto Scaling balances across the configured subnets, but this is not a strict per-AZ guarantee during capacity shortages or AZ failures. Karpenter requests remain 1 CPU and 1 GiB per replica, so the managed nodes must have enough schedulable capacity for system addons and both replicas.
 
 ---
 
-## KAR-13 — Public EKS endpoint open to `0.0.0.0/0`
+## KAR-13 — Public EKS endpoint open to `0.0.0.0/0` — ACCEPTED (lab) ✅
 
-**File:** `modules/eks/main.tf:22`  
-**Impact:** The Kubernetes API server is reachable from the entire internet.
+**Status (2026-11-03):** Accepted risk for this lab.
 
-```hcl
-endpoint_public_access = true
-```
+**File:** `modules/eks/main.tf`
 
-The module default `public_access_cidrs` is `["0.0.0.0/0"]`.
-
-### Recommendation
-
-- Restrict to known CIDRs:
-
-```hcl
-cluster_endpoint_public_access_cidrs = ["<office-ip>/32", "<runner-ip>/32"]
-```
-
-- Or disable public access entirely and use a VPN/bastion or private runners:
-
-```hcl
-endpoint_public_access  = false
-endpoint_private_access = true
-```
-
-- GitHub-hosted runners use a large, changing IP range; OIDC + private runners is a better long-term answer.
+**Decision:** Keep `endpoint_public_access = true` with the module's default public access CIDR. This allows cluster administration from changing lab/client networks without maintaining an allowlist or operating private access infrastructure. The EKS API endpoint is publicly reachable; authentication and EKS access policies remain required. Restrict the CIDR or use private access before production use.
 
 ---
 
-## KAR-14 — Control plane logging is disabled
+## KAR-14 — Control plane logging is disabled — RESOLVED ✅
 
-**File:** `modules/eks/main.tf` (no `cluster_enabled_log_types`)  
-**Impact:** No audit trail for incident response.
+**Status: RESOLVED (2026-11-03).**
 
-### Recommendation
+**File:** `modules/eks/main.tf`
 
-```hcl
-cluster_enabled_log_types = [
-  "audit",
-  "api",
-  "authenticator",
-  "controllerManager",
-  "scheduler",
-]
-```
+### Implementation
 
-Consider shipping to CloudWatch Logs with a retention policy.
+The EKS module now enables all five control-plane log types: `audit`, `api`, `authenticator`, `controllerManager` and `scheduler`, using the module's `enabled_log_types` argument. The EKS module manages the associated CloudWatch log group.
 
 ---
 
-## KAR-15 — Control plane ENIs are placed in public subnets
+## KAR-15 — Control plane ENIs are placed in public subnets — RESOLVED ✅
 
-**File:** `modules/eks/main.tf:26`  
-**Impact:** Unnecessary public exposure of control plane ENIs.
+**Status: RESOLVED (2026-11-03).**
 
-```hcl
-control_plane_subnet_ids = var.vpc_public_subnets
-```
+**File:** `modules/eks/main.tf`
 
-### Recommendation
+### Implementation
 
-Use private subnets for control plane ENIs:
-
-```hcl
-control_plane_subnet_ids = var.vpc_private_subnets
-subnet_ids               = var.vpc_private_subnets
-```
-
-The public endpoint (if enabled) still works independently.
+`control_plane_subnet_ids` now uses `var.vpc_private_subnets`, the same private subnets used by the EKS managed node group. Public EKS API endpoint access is configured separately and remains enabled per the accepted KAR-13 lab decision.
 
 ---
 
-## KAR-16 — Public subnets auto-assign public IPs
+## KAR-16 — Public subnets auto-assign public IPs — RESOLVED ✅
 
-**File:** `modules/vpc/main.tf:16`  
-**Impact:** Accidental public exposure of instances launched in public subnets.
+**Status: RESOLVED (2026-11-03).**
 
-```hcl
-map_public_ip_on_launch = true
-```
+**File:** `modules/vpc/main.tf`
 
-### Recommendation
+### Implementation
 
-Set to `false` unless a specific workload requires it. Load balancers do not need this.
+Set `map_public_ip_on_launch = false`. Instances launched in public subnets no longer receive public IPv4 addresses automatically. EKS managed and Karpenter nodes are in private subnets and were not affected by this setting.
 
 ---
 
-## KAR-17 — IMDSv2 is not enforced on Karpenter nodes
+## KAR-17 — IMDSv2 is not enforced on Karpenter nodes — RESOLVED ✅
 
-**File:** `resources/manifests/karpenter-nodepool.yaml` (no `metadataOptions`)  
-**Impact:** Pods could potentially access instance credentials via IMDS.
+**Status: RESOLVED (2026-11-03).**
 
-### Recommendation
+**File:** `resources/manifests/karpenter-nodepool.yaml`
 
-Add to the `EC2NodeClass`:
+### Implementation
 
-```yaml
-metadataOptions:
-  httpEndpoint: enabled
-  httpTokens: required
-  httpPutResponseHopLimit: 1
-```
-
-Use hop limit `1` if pods do not need IMDS (they shouldn't with IRSA/Pod Identity). If a workload needs IMDS, use `2` and restrict access with a NetworkPolicy.
+The `EC2NodeClass` now enables the metadata endpoint, requires IMDSv2 tokens, and sets `httpPutResponseHopLimit: 1`. Workloads should use their assigned pod identity rather than retrieving node-role credentials from IMDS.
 
 ---
 
 # P3 — Low / Cost
 
-## KAR-18 — NodePool CPU limit is effectively unlimited
+## KAR-18 — NodePool CPU limit is effectively unlimited — RESOLVED ✅
 
-**File:** `resources/manifests/karpenter-nodepool.yaml:29-30`
+**Status: RESOLVED (2026-11-03).**
 
-```yaml
-limits:
-  cpu: 1000
-```
+**File:** `resources/manifests/karpenter-nodepool.yaml`
 
-1000 vCPUs is not a meaningful cost guard.
+### Implementation
 
-### Recommendation
-
-Set a realistic cap for the lab, for example:
-
-```yaml
-limits:
-  cpu: "32"
-  memory: 128Gi
-```
+The NodePool now caps aggregate capacity at `20` CPUs and `60Gi` memory.
 
 ---
 
-## KAR-19 — No instance-size constraint
+## KAR-19 — No instance-size constraint — RESOLVED ✅
 
-**File:** `resources/manifests/karpenter-nodepool.yaml:18-23`
+**Status: RESOLVED (2026-11-03).**
 
-The NodePool allows `c`, `m` and `r` instances of generation > 2, with no size cap. A single large pod can cause Karpenter to launch a very large (and expensive) instance.
+**File:** `resources/manifests/karpenter-nodepool.yaml`
 
-### Recommendation
+### Implementation
 
-```yaml
-- key: karpenter.k8s.aws/instance-size
-  operator: In
-  values: ["small", "medium", "large", "xlarge"]
-```
-
-Adjust based on the workloads you actually run.
+The NodePool limits eligible instances to `small` and `medium` sizes, and requires instance generation greater than 2.
 
 ---
 
-## KAR-20 — Aggressive consolidation
+## KAR-20 — Aggressive consolidation — RESOLVED ✅
 
-**File:** `resources/manifests/karpenter-nodepool.yaml:31-33`
+**Status: RESOLVED (2026-11-03).**
 
-```yaml
-consolidationPolicy: WhenEmptyOrUnderutilized
-consolidateAfter: 1m
-```
+**File:** `resources/manifests/karpenter-nodepool.yaml`
 
-This can cause frequent node churn.
+### Implementation
 
-### Recommendation
-
-- Use `consolidateAfter: 5m` or `15m`.
-- Consider the `Balanced` consolidation policy (available in Karpenter 1.15), which only consolidates when the estimated savings justify the disruption.
+The NodePool uses `consolidationPolicy: Balanced` and `consolidateAfter: 10m`.
 
 ---
 
-## KAR-21 — On-demand only, no spot capacity — ACCEPTED (intentional)
+## KAR-21 — On-demand only, no spot capacity — ACCEPTED (intentional) ✅
 
 **Status (2026-10-30):** Intentional for this lab. Spot capacity will not be used.
 
@@ -562,101 +386,57 @@ This can cause frequent node churn.
 
 ---
 
-## KAR-22 — No disruption budgets
+## KAR-22 — No disruption budgets — RESOLVED ✅
+
+**Status: RESOLVED (2026-11-03).**
 
 **File:** `resources/manifests/karpenter-nodepool.yaml`
 
-Karpenter can voluntarily disrupt many nodes at once during consolidation or drift.
+### Implementation
 
-### Recommendation
-
-```yaml
-disruption:
-  budgets:
-    - nodes: "10%"
-```
+The NodePool sets a disruption budget of `10%` (`disruption.budgets[].nodes`), limiting voluntary Karpenter disruptions.
 
 ---
 
 # P4 — Hygiene
 
-## KAR-23 — S3 backend has no encryption or state locking
+## KAR-23 — S3 backend has no encryption or state locking — IMPLEMENTED ✅
 
-**File:** `provider.tf:9-13`
+**Status (2026-11-03):** Backend configuration fix implemented.
 
-```hcl
-backend "s3" {
-  bucket = "tf-backend-lab-s3"
-  key    = "terraform.tfstate"
-  region = "us-east-1"
-}
-```
+**File:** `provider.tf`
 
-### Recommendation
+### Implementation
 
-```hcl
-backend "s3" {
-  bucket       = "tf-backend-lab-s3"
-  key          = "terraform.tfstate"
-  region       = "us-east-1"
-  encrypt      = true
-  use_lockfile = true
-}
-```
-
-Terraform 1.10+ supports S3 native locking via `use_lockfile`; DynamoDB-based locking is deprecated. Also enable bucket versioning, SSE and Block Public Access.
+The S3 backend now sets `encrypt = true` and `use_lockfile = true`, enabling encrypted state and native S3 state locking. Bucket versioning and Block Public Access are bucket-level settings not configured in this Terraform backend block; verify they are enabled on the existing bucket.
 
 ---
 
-## KAR-24 — `.terraform.lock.hcl` is ignored
+## KAR-24 — `.terraform.lock.hcl` is ignored — IMPLEMENTED (commit pending)
 
-**File:** `.gitignore:24`
+**Status (2026-11-03):** The ignore exception is in place and the generated lock file is present in the working tree, but it remains untracked and still needs to be committed.
 
-```gitignore
-*.hcl
-```
+**Files:** `.gitignore`, `.terraform.lock.hcl`
 
-This ignores `.terraform.lock.hcl`, which should be committed to pin provider versions and checksums.
+### Implementation
 
-### Recommendation
-
-Remove the `*.hcl` rule, or add an exception:
-
-```gitignore
-*.hcl
-!.terraform.lock.hcl
-```
-
-Then commit the lock file.
+`.gitignore` now retains the general `*.hcl` ignore rule while adding `!.terraform.lock.hcl`. The lock file pins the resolved provider versions and checksums. Add and commit `.terraform.lock.hcl` with the project changes.
 
 ---
 
-## KAR-25 — CRLF line endings in Terraform files
+## KAR-25 — CRLF line endings in Terraform files — RESOLVED ✅
+
+**Status: RESOLVED (2026-11-03).**
 
 **File:** `.gitattributes`
 
-The working tree contains CRLF in `.tf`, `.tfvars` and `.md` files, while the committed versions are LF. Every `.tf` file shows as modified for line-ending-only changes.
+### Implementation
 
-### Recommendation
-
-```gitattributes
-*.tf        text eol=lf
-*.tfvars    text eol=lf
-*.md        text eol=lf
-*.sh        text eol=lf
-*.yml       text eol=lf
-*.yaml      text eol=lf
-```
-
-Then renormalize:
-
-```sh
-git add --renormalize .
-```
+Added explicit LF rules for Terraform (`.tf`, `.tfvars`, `.hcl`), Markdown, shell scripts, YAML and JSON, plus `text=auto` for other text files. Normalized the current working-tree files to LF without staging them, preserving existing edits. Git will now check out the configured files with LF endings, and future commits will have normalized line endings.
 
 ---
 
-## KAR-26 — `modules/eks/main.tf` is not formatted — RESOLVED
+## KAR-26 — `modules/eks/main.tf` is not formatted — RESOLVED ✅
 
 **Status (2026-10-30):** `modules/eks/main.tf` was formatted as part of the KAR-01/KAR-02 changes.
 
@@ -731,7 +511,7 @@ Expose it as a variable so upgrades are explicit and can be tested independently
    terraform apply tfplan
    ```
 
-2. **No concurrency control.** Two workflow runs can overlap. Combined with KAR-23 (no state locking), this can corrupt state. Add:
+2. **No concurrency control.** Two workflow runs can overlap. Native S3 state locking is now enabled (KAR-23), but workflow serialization still prevents duplicate concurrent deploy/destroy operations. Add:
 
    ```yaml
    concurrency:
@@ -860,7 +640,7 @@ Completed:
 
 - **KAR-01:** controller identity implemented with EKS Pod Identity.
 - **KAR-02:** controller IAM policies aligned with the official Karpenter v1.15.0 CloudFormation policy.
-- **KAR-03:** `spec.role` is authorized; the unused Terraform-created instance profile remains optional cleanup.
+- **KAR-03:** `spec.role` is authorized; the unused Terraform-created instance profile has been removed.
 - **KAR-04:** access entries now use the module-native `policy_associations`.
 
 Remaining:
@@ -869,37 +649,42 @@ Remaining:
 
 ## Phase 2 — Reliability and teardown (P1)
 
-1. Remove the discovery tag from the generic `tags` map.
-2. Make teardown wait for NodeClaims and instances.
-3. Fix the hardcoded LB name and manage LBC IAM in Terraform.
-4. Pin the LBC CRD source and clean up temporary files.
+Completed:
 
-The interruption queue is intentionally out of scope for this lab (KAR-06).
+- **KAR-05:** discovery tag scoped to the node security group.
+- **KAR-07:** teardown waits for NodeClaims and EC2 instances.
+- **KAR-08:** teardown discovers cluster load balancers by tag.
+- **KAR-09:** LBC IAM policy and IRSA role managed by Terraform.
+- **KAR-10:** LBC chart and CRDs are version-pinned; downloads are temporary.
+
+The interruption queue and single NAT gateway are accepted lab trade-offs (KAR-06 and KAR-11).
 
 ## Phase 3 — HA and security (P2)
 
-1. Decide on the NAT strategy (`single_nat_gateway = false` or VPC endpoints).
-2. Add redundancy for system nodes and the Karpenter controller.
-3. Restrict or disable the public EKS endpoint.
-4. Enable control plane logging.
-5. Move control plane ENIs to private subnets.
-6. Disable `map_public_ip_on_launch`.
-7. Enforce IMDSv2.
+Implemented:
+
+- **KAR-14:** all EKS control-plane log types enabled.
+- **KAR-15:** control-plane ENIs use private subnets.
+- **KAR-16:** public subnet auto-assignment of public IPs disabled.
+- **KAR-17:** IMDSv2 required on Karpenter-launched nodes.
+
+Accepted for the lab:
+
+- **KAR-13:** public EKS API endpoint access.
+
+Restrict public API access before production use. Public subnet auto-assignment is already disabled.
 
 ## Phase 4 — Cost and tuning (P3)
 
-1. Set realistic NodePool limits.
-2. Add an instance-size constraint.
-3. Tune consolidation.
-4. Add disruption budgets.
+Implemented: NodePool limits (KAR-18), instance-size constraints (KAR-19), balanced consolidation (KAR-20), and disruption budgets (KAR-22).
 
 Spot capacity is intentionally out of scope for this lab (KAR-21).
 
 ## Phase 5 — Hygiene (P4)
 
-1. Enable S3 backend encryption and native locking.
-2. Commit `.terraform.lock.hcl`.
-3. Normalize line endings and run `terraform fmt`.
+1. Verify S3 bucket versioning and Block Public Access (KAR-23).
+2. Commit `.terraform.lock.hcl` (KAR-24).
+3. Finish formatting untouched Terraform files (KAR-26).
 4. Add `eks_cluster_name` to the tfvars.
 5. Type the root variables.
 6. Make the Kubernetes version a variable.

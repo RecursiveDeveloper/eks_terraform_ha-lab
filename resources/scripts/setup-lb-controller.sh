@@ -4,6 +4,9 @@ set -euo pipefail
 CLUSTER_NAME="$1"
 AWS_REGION="$2"
 LB_CONTROLLER_VERSION="v2.14.1"
+LB_CONTROLLER_CHART_VERSION="1.14.1"
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
 
 # ── 1. Clean up existing resources ────────────────────────────────────────────
 echo "==> Cleaning up existing load balancer resources..."
@@ -12,27 +15,17 @@ kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-n
 helm uninstall aws-load-balancer-controller -n kube-system --ignore-not-found || echo "Controller not found, skipping."
 sleep 10
 
-# ── 2. IAM policy ─────────────────────────────────────────────────────────────
-echo "==> Configuring IAM policy..."
-curl -sO https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/${LB_CONTROLLER_VERSION}/docs/install/iam_policy.json
-aws iam create-policy \
-  --policy-name AWSLoadBalancerControllerIAMPolicy \
-  --policy-document file://iam_policy.json 2>/dev/null || echo "Policy already exists, skipping."
+# ── 2. IAM service account ────────────────────────────────────────────────────
+echo "==> Associating the service account with its Terraform-managed IAM role..."
+ROLE_NAME="${CLUSTER_NAME}-aws-load-balancer-controller"
+ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text)
 
-# ── 3. IAM service account ────────────────────────────────────────────────────
-echo "==> Creating/updating IAM service account..."
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+kubectl get serviceaccount aws-load-balancer-controller -n kube-system >/dev/null 2>&1 || \
+  kubectl create serviceaccount aws-load-balancer-controller -n kube-system
+kubectl annotate serviceaccount aws-load-balancer-controller -n kube-system \
+  "eks.amazonaws.com/role-arn=${ROLE_ARN}" --overwrite
 
-eksctl create iamserviceaccount \
-  --cluster="$CLUSTER_NAME" \
-  --namespace=kube-system \
-  --name=aws-load-balancer-controller \
-  --attach-policy-arn="arn:aws:iam::${ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy" \
-  --region "$AWS_REGION" \
-  --override-existing-serviceaccounts \
-  --approve
-
-# ── 4. Helm install ───────────────────────────────────────────────────────────
+# ── 3. Helm install ───────────────────────────────────────────────────────────
 echo "==> Installing aws-load-balancer-controller via Helm..."
 VPC_ID=$(aws eks describe-cluster \
   --name "$CLUSTER_NAME" \
@@ -43,10 +36,18 @@ VPC_ID=$(aws eks describe-cluster \
 helm repo add eks https://aws.github.io/eks-charts
 helm repo update
 
-wget -q https://raw.githubusercontent.com/aws/eks-charts/master/stable/aws-load-balancer-controller/crds/crds.yaml
-kubectl apply -f crds.yaml
+echo "==> Downloading version-pinned AWS Load Balancer Controller CRDs..."
+for crd in \
+  elbv2.k8s.aws_ingressclassparams.yaml \
+  elbv2.k8s.aws_targetgroupbindings.yaml; do
+  curl -fsSL \
+    "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/${LB_CONTROLLER_VERSION}/config/crd/bases/${crd}" \
+    -o "${tmpdir}/${crd}"
+  kubectl apply -f "${tmpdir}/${crd}"
+done
 
 helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  --version "$LB_CONTROLLER_CHART_VERSION" \
   -n kube-system \
   --set clusterName="$CLUSTER_NAME" \
   --set serviceAccount.create=false \
@@ -55,7 +56,7 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
   --set vpcId="$VPC_ID" \
   --set image.tag="$LB_CONTROLLER_VERSION"
 
-# ── 5. Wait for readiness ─────────────────────────────────────────────────────
+# ── 4. Wait for readiness ─────────────────────────────────────────────────────
 echo "==> Waiting for AWS Load Balancer Controller to be ready..."
 kubectl wait --for=condition=available --timeout=300s \
   deployment/aws-load-balancer-controller -n kube-system

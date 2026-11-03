@@ -13,7 +13,7 @@ module "vpc" {
   enable_dns_support        = true
   enable_nat_gateway        = true
   single_nat_gateway        = true
-  map_public_ip_on_launch   = true
+  map_public_ip_on_launch   = false
 
   tags = {
     Terraform   = "true"
