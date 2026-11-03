@@ -6,7 +6,7 @@
 **Scope:** Terraform modules, Karpenter IAM/installation, NodePool/EC2NodeClass, VPC, CI/CD workflows, teardown scripts  
 **Method:** Manual review + `terraform validate` + version checks against upstream registries/repositories
 
-> **Implementation update (2026-11-03):** KAR-01 through KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22, KAR-25 and KAR-26 are implemented. KAR-06, KAR-11, KAR-13 and KAR-21 are accepted lab trade-offs. KAR-23 backend settings are implemented, with bucket-level settings to verify; KAR-24's lock file still needs a commit. See the relevant KAR sections for implementation details.
+> **Implementation update (2026-11-03):** KAR-01 through KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22, KAR-24 through KAR-28, KAR-30 findings 1/2/4, and KAR-31 through KAR-32 are implemented. KAR-06, KAR-11, KAR-13, KAR-21 and KAR-29 are accepted lab decisions. KAR-23 backend settings are implemented; bucket-level settings still need verification.
 
 ---
 
@@ -20,7 +20,7 @@ The initial review identified three independent blockers. **KAR-01 (controller A
 2. **Implemented — KAR-02:** Controller IAM policies now match the official Karpenter v1.15.0 policy statements, including `CreateFleet`, scoped resource tagging/deletion, instance-profile management and regional discovery.
 3. **Resolved — KAR-03:** `EC2NodeClass` uses `spec.role`, so Karpenter manages its instance profile. The unused `aws_iam_instance_profile.karpenter_node` has been removed.
 
-Beyond Karpenter, there are HA, security, teardown and CI hygiene issues. KAR-04, KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22 and KAR-25 have been implemented. KAR-11 and KAR-13 are accepted lab risks. The repository still has limitations such as a single NAT gateway and no strict per-AZ capacity guarantee.
+Beyond Karpenter, there are HA, security, teardown and CI hygiene issues. KAR-04, KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22, KAR-24 through KAR-28 and KAR-31 through KAR-32 have been implemented. KAR-11, KAR-13 and KAR-29 are accepted lab risks. The repository still has limitations such as a single NAT gateway and no strict per-AZ capacity guarantee.
 
 ### Severity Summary
 
@@ -32,7 +32,7 @@ Beyond Karpenter, there are HA, security, teardown and CI hygiene issues. KAR-04
 | **P3 — Low / Cost** | 5 | Cost control and Karpenter tuning |
 | **P4 — Hygiene** | 11 | Terraform/CI/repository maintainability |
 
-> **Status note (2026-11-03):** Counts reflect the initial review. KAR-01 through KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22, KAR-25 and KAR-26 are implemented; KAR-06, KAR-11, KAR-13 and KAR-21 are accepted for this lab. KAR-23 needs bucket-level verification, and KAR-24's lock file awaits commit.
+> **Status note (2026-11-03):** Counts reflect the initial review. KAR-01 through KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22, KAR-24 through KAR-28, KAR-30 findings 1/2/4 and KAR-31 through KAR-32 are implemented; KAR-06, KAR-11, KAR-13, KAR-21 and KAR-29 are accepted for this lab. KAR-23 bucket-level settings still need verification.
 
 ---
 
@@ -412,15 +412,15 @@ The S3 backend now sets `encrypt = true` and `use_lockfile = true`, enabling enc
 
 ---
 
-## KAR-24 — `.terraform.lock.hcl` is ignored — IMPLEMENTED (commit pending)
+## KAR-24 — `.terraform.lock.hcl` is ignored — RESOLVED ✅
 
-**Status (2026-11-03):** The ignore exception is in place and the generated lock file is present in the working tree, but it remains untracked and still needs to be committed.
+**Status: RESOLVED (2026-11-03).** The ignore exception and lock file are committed.
 
 **Files:** `.gitignore`, `.terraform.lock.hcl`
 
 ### Implementation
 
-`.gitignore` now retains the general `*.hcl` ignore rule while adding `!.terraform.lock.hcl`. The lock file pins the resolved provider versions and checksums. Add and commit `.terraform.lock.hcl` with the project changes.
+`.gitignore` retains the general `*.hcl` ignore rule while adding `!.terraform.lock.hcl`. The committed lock file pins the resolved provider versions and checksums.
 
 ---
 
@@ -432,7 +432,7 @@ The S3 backend now sets `encrypt = true` and `use_lockfile = true`, enabling enc
 
 ### Implementation
 
-Added explicit LF rules for Terraform (`.tf`, `.tfvars`, `.hcl`), Markdown, shell scripts, YAML and JSON, plus `text=auto` for other text files. Normalized the current working-tree files to LF without staging them, preserving existing edits. Git will now check out the configured files with LF endings, and future commits will have normalized line endings.
+Added explicit LF rules for Terraform (`.tf`, `.tfvars`, `.hcl`), Markdown, shell scripts, YAML and JSON, plus `text=auto` for other text files. Existing files were normalized to LF and committed. Git will check out the configured files with LF endings going forward.
 
 ---
 
@@ -448,53 +448,37 @@ Ran `terraform fmt modules/eks/main.tf`. `terraform fmt -check modules/eks/main.
 
 ---
 
-## KAR-27 — `eks_cluster_name` is missing from `terraform.auto.tfvars`
+## KAR-27 — `eks_cluster_name` is missing from `terraform.auto.tfvars` — RESOLVED ✅
+
+**Status: RESOLVED (2026-11-03).**
 
 **File:** `terraform.auto.tfvars`
 
-The variable has no default, and the tfvars file does not set it. In CI it is injected via `TF_VAR_eks_cluster_name`, but a local `terraform plan` fails.
+### Implementation
 
-### Recommendation
-
-Add it to `terraform.auto.tfvars`:
-
-```hcl
-eks_cluster_name = "devopslab-eks"
-```
-
-Or give the variable a default in `variables.tf`.
+The tfvars file now sets `eks_cluster_name = "devopslab-eks"`, supporting local Terraform runs as well as CI.
 
 ---
 
-## KAR-28 — Root variables are untyped
+## KAR-28 — Root variables are untyped — RESOLVED ✅
+
+**Status: RESOLVED (2026-11-03).**
 
 **File:** `variables.tf`
 
-```hcl
-variable "vpc_name" {}
-variable "vpc_cidr" {}
-...
-```
+### Implementation
 
-Terraform infers `any`, so there is no validation or documentation.
-
-### Recommendation
-
-Add types and descriptions, especially for `eks_managed_node_groups`, matching the object schema already defined in `modules/eks/variables.tf`.
+All root variables now declare types and descriptions. `eks_managed_node_groups` uses a typed map/object schema matching the EKS module input.
 
 ---
 
-## KAR-29 — Kubernetes version is hardcoded
+## KAR-29 — Kubernetes version is hardcoded — ACCEPTED (lab) ✅
 
-**File:** `modules/eks/main.tf:8`
+**Status (2026-11-03):** Accepted for this lab.
 
-```hcl
-kubernetes_version = "1.37"
-```
+**File:** `modules/eks/main.tf`
 
-### Recommendation
-
-Expose it as a variable so upgrades are explicit and can be tested independently of the module source.
+**Decision:** Keep `kubernetes_version = "1.37"` explicit in the EKS module. This lab targets a fixed Kubernetes/Karpenter compatibility pair; update the Kubernetes version and Karpenter version together when performing an intentional upgrade.
 
 ---
 
@@ -502,71 +486,44 @@ Expose it as a variable so upgrades are explicit and can be tested independently
 
 **Files:** `.github/workflows/deploy.yml`, `.github/workflows/main.yml`, `.github/actions/setup-composite/action.yml`
 
-### Findings
+### Implemented (2026-11-03)
 
-1. **Plan is not applied.** `deploy.yml:37-45` runs `terraform plan` and then `terraform apply -auto-approve` separately, so the applied plan may differ from the reviewed one.
+- **Finding 1 — Saved plan:** Deploy now creates `tfplan` with `terraform plan -input=false -out=tfplan` and applies that exact file with `terraform apply -input=false -auto-approve tfplan`. A cleanup step removes the saved plan even if a prior step fails.
+- **Finding 2 — Concurrency:** The caller workflow serializes runs by repository with `cancel-in-progress: false`, preventing deploy and destroy workflows from operating on the same Terraform state concurrently.
+- **Finding 4 — kubectl version:** The shared setup action installs `kubectl v1.37.0`, matching the cluster's Kubernetes 1.37 minor version for both deploy and destroy.
 
-   ```sh
-   terraform plan -out=tfplan
-   terraform apply tfplan
-   ```
+### Remaining findings
 
-2. **No concurrency control.** Two workflow runs can overlap. Native S3 state locking is now enabled (KAR-23), but workflow serialization still prevents duplicate concurrent deploy/destroy operations. Add:
-
-   ```yaml
-   concurrency:
-     group: terraform-${{ github.ref }}
-     cancel-in-progress: false
-   ```
-
-3. **Static AWS credentials.** `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are long-lived secrets. Prefer GitHub OIDC federation to an IAM role.
-
-4. **kubectl version.** The composite action does not install kubectl. The runner's preinstalled version may be several minors behind 1.37, outside the supported skew. Install a matching version explicitly.
-
-5. **Terraform version is valid.** `1.16.5` exists (verified). The existing security report's suggestion to change it to `1.6.5` is incorrect.
-
-6. **No smoke test.** Add a post-install check that actually exercises Karpenter:
-
-   ```sh
-   kubectl create deployment smoke --image=public.ecr.aws/nginx/nginx:stable --replicas=1
-   kubectl set resources deployment smoke --requests=cpu=2
-   kubectl wait --for=condition=Ready nodeclaim --all --timeout=10m
-   ```
+- Long-lived AWS access keys are still used; migrate to GitHub OIDC when ready.
+- The workflow still has no post-deploy Karpenter smoke test (see KAR-33).
 
 ---
 
-## KAR-31 — Unused `devops_role` and README inaccuracy
+## KAR-31 — Unused `devops_role` and README inaccuracy — RESOLVED ✅
 
-**File:** `modules/iam/main.tf:11-29`, `README.md:50`
+**Status: RESOLVED (2026-11-03).**
 
-`devops_role` is assumable by both users, but it has only the `kubeconfig_policy` (describe cluster). It has no EKS access entry. Meanwhile, the users themselves receive `AmazonEKSClusterAdminPolicy` via access entries in `modules/eks/main.tf:63-79`.
+**Files:** `modules/iam/main.tf`, `README.md`
 
-So assuming the role gives less access than using the user directly, and the role serves no purpose.
+### Implementation
 
-### Recommendation
-
-Either:
-
-- Grant `devops_role` an EKS access entry and use it as the cluster identity (better practice), or
-- Remove the role and the `assume_role` policies.
-
-Also update the README: it says the IAM module creates "users, groups, and policies", but no groups are created.
+- Removed the unused `devops_role`, both user assume-role policies, its kubeconfig policy and its policy attachment. The two IAM users remain managed by the IAM module, and EKS access entries grant their cluster access.
+- Updated the README to describe the IAM module accurately and reflect the current NodePool configuration.
 
 ---
 
-## KAR-32 — `sed` substitution for the Karpenter manifest is fragile
+## KAR-32 — `sed` substitution for the Karpenter manifest is fragile — RESOLVED ✅
 
-**File:** `.github/workflows/deploy.yml:63-65`
+**Status: RESOLVED (2026-11-03).**
 
-```sh
-sed "s/CLUSTER_NAME/${{ inputs.eks_cluster_name }}/g" resources/manifests/karpenter-nodepool.yaml | kubectl apply -f -
-```
+**Files:** `resources/manifests/karpenter-nodepool.yaml`, `.github/workflows/deploy.yml`, `.github/actions/setup-composite/action.yml`
 
-Cluster names are restricted to alphanumerics and hyphens, so this works in practice, but `sed` special characters (`/`, `&`, `\`) would break it, and the input is interpolated directly into a shell command.
+### Implementation
 
-### Recommendation
-
-Use `envsubst` with an exported variable, or manage the manifest with the Terraform Kubernetes provider so it is part of the apply graph.
+- The manifest placeholders now use `${EKS_CLUSTER_NAME}` instead of the bare `CLUSTER_NAME` token, so `envsubst` can resolve them.
+- The deploy workflow passes the cluster name through a step-level `env:` block and renders the manifest with `envsubst '${EKS_CLUSTER_NAME}'`, piping it to `kubectl apply -f -`. The value is no longer interpolated into the shell command, removing the `sed` escaping and command-injection concerns.
+- The step fails fast if the variable is empty, and verifies the manifest still contains the placeholder so a missed substitution cannot silently apply an unrendered NodeClass.
+- The shared setup action verifies or installs `gettext` (which provides `envsubst`) before deploy and destroy run.
 
 ---
 
@@ -578,34 +535,7 @@ The workflow ends after applying the NodePool/EC2NodeClass. It does not verify t
 
 ### Recommendation
 
-Add a smoke test (see KAR-30.6) and fail the workflow if no NodeClaim becomes ready. At minimum, check the controller logs for `AccessDenied` / `UnauthorizedOperation`.
-
----
-
-## KAR-34 — Existing security report overstates Karpenter compliance
-
-**File:** `reports/report_v1.0.0.md:77-78`
-
-The report marks as compliant:
-
-- "Karpenter with IRSA configured" — **not true at the time of this review**: the controller role existed but was not attached to the service account. It now uses Pod Identity (KAR-01).
-- "Karpenter policies with resource conditions" — **partially true at the time of this review**: the policies had some conditions but were missing required actions/resources (KAR-02). They now match the official v1.15.0 policy.
-
-### Recommendation
-
-Update the report to reflect the actual wiring. A compliance gate that reports Karpenter as green while it cannot provision nodes is misleading.
-
----
-
-## KAR-35 — Report's Terraform version recommendation is wrong
-
-**File:** `reports/report_v1.0.0.md:256`
-
-The report suggests changing Terraform `1.16.5` → `1.6.5`. Terraform `1.16.5` exists and was used successfully for `terraform validate` in this review.
-
-### Recommendation
-
-Remove that item from the report's backlog.
+Add a post-deploy smoke test and fail the workflow if no NodeClaim becomes ready. At minimum, check the controller logs for `AccessDenied` / `UnauthorizedOperation`.
 
 ---
 
@@ -682,15 +612,22 @@ Spot capacity is intentionally out of scope for this lab (KAR-21).
 
 ## Phase 5 — Hygiene (P4)
 
+Implemented:
+
+- **KAR-24:** lock file committed and allowed by `.gitignore`.
+- **KAR-25:** LF line endings enforced and normalized.
+- **KAR-27:** cluster name set in `terraform.auto.tfvars`.
+- **KAR-28:** root variables typed and documented.
+- **KAR-31:** unused DevOps role removed and README corrected.
+- **KAR-32:** manifest rendering switched from `sed` to `envsubst` with an exported variable.
+
+Accepted for the lab: **KAR-29**, fixed Kubernetes version `1.37`.
+
+Remaining:
+
 1. Verify S3 bucket versioning and Block Public Access (KAR-23).
-2. Commit `.terraform.lock.hcl` (KAR-24).
-3. Finish formatting untouched Terraform files (KAR-26).
-4. Add `eks_cluster_name` to the tfvars.
-5. Type the root variables.
-6. Make the Kubernetes version a variable.
-7. Improve the CI workflow (plan artifact, concurrency, OIDC, kubectl version, smoke test).
-8. Clean up `devops_role` and the README.
-9. Update the security report.
+2. Finish formatting untouched Terraform files (KAR-26).
+3. Migrate CI to GitHub OIDC and add a Karpenter smoke test (KAR-30, KAR-33).
 
 ---
 

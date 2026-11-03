@@ -47,7 +47,7 @@ eks-terraform/
 ## Features
 
 - **VPC Module:** Provisions a VPC with public and private subnets across multiple AZs, tagged for Karpenter subnet discovery.
-- **IAM Module:** Creates IAM users, groups, and policies for DevOps access.
+- **IAM Module:** Manages two IAM users for DevOps; their cluster access is granted through EKS access entries.
 - **EKS Module:** Deploys an EKS cluster with managed node groups, EKS managed addons, Karpenter IAM roles, and access entries.
 
 ## EKS Managed Addons
@@ -70,8 +70,9 @@ This project uses **Karpenter** for node autoscaling instead of the Cluster Auto
 The NodePool is configured with:
 - Architecture: `amd64`, OS: `linux`
 - Capacity type: `on-demand`
-- Instance categories: `c`, `m`, `r` (generation > 2)
-- Consolidation policy: `WhenEmptyOrUnderutilized`
+- Instance sizes: `small`, `medium` (generation > 2)
+- Aggregate limits: 20 CPUs and 60 GiB memory
+- Balanced consolidation after 10 minutes, with a 10% disruption budget
 - Node expiry: 30 days
 
 ## Prerequisites
@@ -161,8 +162,8 @@ The IAM user used to deploy the cluster is automatically granted admin access vi
 ## Modules
 
 - [`modules/vpc`](modules/vpc/main.tf): Provisions the VPC, public/private subnets, NAT gateway, and Karpenter discovery tags.
-- [`modules/iam`](modules/iam/main.tf): Manages IAM users, groups, and policies for DevOps access.
-- [`modules/eks`](modules/eks/main.tf): Deploys the EKS cluster, managed node groups, EKS addons, Karpenter node and controller IAM roles, instance profile, and access entries.
+- [`modules/iam`](modules/iam/main.tf): Manages the two DevOps IAM users.
+- [`modules/eks`](modules/eks/main.tf): Deploys EKS, managed node groups, addons, Karpenter and AWS Load Balancer Controller IAM roles/policies, and access entries.
 
 ## Requirements
 

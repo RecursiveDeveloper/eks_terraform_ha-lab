@@ -35,14 +35,18 @@ jobs:
         run: terraform validate
 
       - name: Terraform Plan
-        run: terraform plan
+        run: terraform plan -input=false -out=tfplan
         env:
           TF_VAR_eks_cluster_name: ${{ inputs.eks_cluster_name }}
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve
+        run: terraform apply -input=false -auto-approve tfplan
         env:
           TF_VAR_eks_cluster_name: ${{ inputs.eks_cluster_name }}
+
+      - name: Remove saved Terraform plan
+        if: always()
+        run: rm -f tfplan
       
       - name: Update kubeconfig
         run: |
@@ -61,5 +65,10 @@ jobs:
           ./resources/scripts/install-karpenter.sh ${{ inputs.eks_cluster_name }}
 
       - name: Apply Karpenter NodePool and EC2NodeClass
+        env:
+          EKS_CLUSTER_NAME: ${{ inputs.eks_cluster_name }}
         run: |
-          sed "s/CLUSTER_NAME/${{ inputs.eks_cluster_name }}/g" resources/manifests/karpenter-nodepool.yaml | kubectl apply -f -
+          set -euo pipefail
+          : "${EKS_CLUSTER_NAME:?EKS_CLUSTER_NAME is required}"
+          grep -q '\${EKS_CLUSTER_NAME}' resources/manifests/karpenter-nodepool.yaml
+          envsubst '${EKS_CLUSTER_NAME}' < resources/manifests/karpenter-nodepool.yaml | kubectl apply -f -

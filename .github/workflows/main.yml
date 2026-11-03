@@ -11,6 +11,10 @@ on:
           - 'deploy'
           - 'destroy'
 
+concurrency:
+  group: terraform-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
   TERRAFORM_VERSION: '1.16.5'
   AWS_REGION: 'us-east-1'

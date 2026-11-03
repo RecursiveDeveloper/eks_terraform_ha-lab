@@ -43,6 +43,21 @@ runs:
       with:
         terraform_version: ${{ inputs.terraform_version }}
 
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: 'v1.37.0'
+
+    - name: Ensure envsubst is available
+      shell: bash
+      run: |
+        if command -v envsubst >/dev/null 2>&1; then
+          echo "envsubst is already installed"
+        else
+          sudo apt-get update
+          sudo apt-get install -y gettext
+        fi
+
     - name: Install eksctl
       shell: bash
       run: |

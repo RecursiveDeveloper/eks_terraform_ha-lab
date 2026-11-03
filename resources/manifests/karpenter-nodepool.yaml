@@ -40,7 +40,7 @@ kind: EC2NodeClass
 metadata:
   name: default
 spec:
-  role: "KarpenterNodeRole-CLUSTER_NAME"
+  role: "KarpenterNodeRole-${EKS_CLUSTER_NAME}"
   metadataOptions:
     httpEndpoint: enabled
     httpTokens: required
@@ -49,7 +49,7 @@ spec:
     - alias: "al2023@latest"
   subnetSelectorTerms:
     - tags:
-        karpenter.sh/discovery: "CLUSTER_NAME"
+        karpenter.sh/discovery: "${EKS_CLUSTER_NAME}"
   securityGroupSelectorTerms:
     - tags:
-        karpenter.sh/discovery: "CLUSTER_NAME"
+        karpenter.sh/discovery: "${EKS_CLUSTER_NAME}"
