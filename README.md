@@ -43,6 +43,7 @@ eks-terraform/
     ├── scripts/
     │   ├── setup-lb-controller.sh
     │   ├── install-karpenter.sh
+    │   ├── smoke-test-karpenter.sh
     │   ├── teardown-lb-controller.sh
     │   └── teardown-karpenter.sh
     └── manifests/
@@ -149,8 +150,10 @@ Do not configure `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY` for the workflow
 Trigger the workflow manually from the **Actions** tab using `workflow_dispatch` on `main`. Select either `deploy` or `destroy` as the action. The OIDC trust policy rejects dispatches from other branches.
 
 The workflow is defined in `.github/workflows/main.yml` and delegates to:
-- `.github/workflows/deploy.yml` — provisions infrastructure and installs controllers
+- `.github/workflows/deploy.yml` — provisions infrastructure, installs controllers, and runs a Karpenter smoke test
 - `.github/workflows/destroy.yml` — tears down controllers and destroys infrastructure
+
+The smoke test creates a temporary, tainted `karpenter-smoke-test` NodePool that reuses the `default` EC2NodeClass. A test workload with the matching toleration and node selector triggers isolated capacity, verifies the resulting NodeClaim is `Ready`, and checks controller logs for AWS authorization errors. Cleanup removes the workload, temporary NodePool, and its owned NodeClaims without selecting or deleting nodes from the existing `default` NodePool. A failed test fails the deployment workflow. Each run temporarily creates one small on-demand EC2 instance.
 
 ### Local Deployment
 

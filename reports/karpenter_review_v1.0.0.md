@@ -8,7 +8,7 @@
 
 > **Implementation update (2026-11-03):** KAR-01 through KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22, KAR-24 through KAR-28, KAR-30 findings 1/2/4, and KAR-31 through KAR-32 are implemented. KAR-06, KAR-11, KAR-13, KAR-21 and KAR-29 are accepted lab decisions. KAR-23 backend settings are implemented; bucket-level settings still need verification.
 >
-> **Implementation update (2026-11-17):** KAR-30 GitHub OIDC authentication is implemented. A separately deployed `bootstrap/` stack manages the GitHub OIDC provider and `github-actions-deploy` role, and both CI workflows now assume that role instead of using long-lived AWS access keys. KAR-33 remains outstanding.
+> **Implementation update (2026-11-17):** KAR-30 GitHub OIDC authentication is implemented. A separately deployed `bootstrap/` stack manages the GitHub OIDC provider and `github-actions-deploy` role, and both CI workflows now assume that role instead of using long-lived AWS access keys. The KAR-33 post-deploy smoke test is implemented and awaits live verification during the next deployment.
 
 ---
 
@@ -500,7 +500,7 @@ All root variables now declare types and descriptions. `eks_managed_node_groups`
 
 ### Remaining findings
 
-- The workflow still has no post-deploy Karpenter smoke test (see KAR-33).
+- None. KAR-33 is implemented; its live execution remains a deployment-verification step.
 
 ---
 
@@ -532,15 +532,31 @@ All root variables now declare types and descriptions. `eks_managed_node_groups`
 
 ---
 
-## KAR-33 — No verification that Karpenter actually works
+## KAR-33 — No verification that Karpenter actually works — IMPLEMENTED ✅
 
-**File:** `.github/workflows/deploy.yml`
+**Status: IMPLEMENTED (2026-11-17); live end-to-end verification is pending the next deployment.**
 
-The workflow ends after applying the NodePool/EC2NodeClass. It does not verify that the controller can authenticate or that a node can be launched.
+**Files:** `.github/workflows/deploy.yml`, `resources/scripts/smoke-test-karpenter.sh`
+
+The workflow ended after applying the NodePool/EC2NodeClass. It did not verify that the controller could authenticate or that a node could be launched.
 
 ### Recommendation
 
 Add a post-deploy smoke test and fail the workflow if no NodeClaim becomes ready. At minimum, check the controller logs for `AccessDenied` / `UnauthorizedOperation`.
+
+### Implementation
+
+The deploy workflow now runs `resources/scripts/smoke-test-karpenter.sh` after applying the NodePool and EC2NodeClass. The script:
+
+- checks recent logs from all Karpenter controller replicas for `AccessDenied` and `UnauthorizedOperation`;
+- creates a temporary `karpenter-smoke-test` NodePool using the existing `default` EC2NodeClass, restricted to small on-demand instances and protected by a test-only taint;
+- creates a pause-container deployment in a dedicated namespace with the matching `karpenter.sh/nodepool: karpenter-smoke-test` selector and toleration, so redeploys cannot schedule onto or delete nodes from the existing `default` NodePool;
+- waits up to 10 minutes (`SMOKE_TEST_TIMEOUT` overrides this) for the deployment to become available;
+- resolves the scheduled node's provider ID to exactly one NodeClaim and waits for that NodeClaim's `Ready` condition;
+- prints NodeClaims, test-pod and deployment details, and recent controller logs on failure;
+- removes the temporary namespace, the resolved test NodeClaim, and the entire temporary NodePool through an exit trap; deleting the pool also removes any unresolved NodeClaims created by a failed provisioning attempt. Cleanup request failures fail the workflow.
+
+Local validation covers Bash syntax and workflow YAML. End-to-end verification requires a deployed EKS cluster.
 
 ---
 
@@ -632,7 +648,8 @@ Remaining:
 
 1. Verify S3 bucket versioning and Block Public Access (KAR-23).
 2. Finish formatting untouched Terraform files (KAR-26).
-3. Add a Karpenter smoke test (KAR-33). CI migration to GitHub OIDC was implemented on 2026-11-17 (KAR-30).
+
+CI migration to GitHub OIDC (KAR-30) and the post-deploy smoke test (KAR-33) were implemented on 2026-11-17.
 
 ---
 

@@ -74,3 +74,8 @@ jobs:
           : "${EKS_CLUSTER_NAME:?EKS_CLUSTER_NAME is required}"
           grep -q '\${EKS_CLUSTER_NAME}' resources/manifests/karpenter-nodepool.yaml
           envsubst '${EKS_CLUSTER_NAME}' < resources/manifests/karpenter-nodepool.yaml | kubectl apply -f -
+
+      - name: Run Karpenter smoke test
+        run: |
+          chmod +x resources/scripts/smoke-test-karpenter.sh
+          ./resources/scripts/smoke-test-karpenter.sh
