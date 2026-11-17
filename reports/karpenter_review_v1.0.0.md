@@ -7,6 +7,8 @@
 **Method:** Manual review + `terraform validate` + version checks against upstream registries/repositories
 
 > **Implementation update (2026-11-03):** KAR-01 through KAR-05, KAR-07 through KAR-10, KAR-12, KAR-14 through KAR-20, KAR-22, KAR-24 through KAR-28, KAR-30 findings 1/2/4, and KAR-31 through KAR-32 are implemented. KAR-06, KAR-11, KAR-13, KAR-21 and KAR-29 are accepted lab decisions. KAR-23 backend settings are implemented; bucket-level settings still need verification.
+>
+> **Implementation update (2026-11-17):** KAR-30 GitHub OIDC authentication is implemented. A separately deployed `bootstrap/` stack manages the GitHub OIDC provider and `github-actions-deploy` role, and both CI workflows now assume that role instead of using long-lived AWS access keys. KAR-33 remains outstanding.
 
 ---
 
@@ -492,9 +494,12 @@ All root variables now declare types and descriptions. `eks_managed_node_groups`
 - **Finding 2 — Concurrency:** The caller workflow serializes runs by repository with `cancel-in-progress: false`, preventing deploy and destroy workflows from operating on the same Terraform state concurrently.
 - **Finding 4 — kubectl version:** The shared setup action installs `kubectl v1.37.0`, matching the cluster's Kubernetes 1.37 minor version for both deploy and destroy.
 
+### Implemented (2026-11-17)
+
+- **GitHub OIDC authentication:** The `bootstrap/` root module manages the GitHub OIDC provider and `github-actions-deploy` role in separate S3 state (`bootstrap.tfstate`). The role trusts only the configured repository subject on `main` and has `AdministratorAccess`. Both workflows grant `id-token: write` and use `aws-actions/configure-aws-credentials@v4` with `role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}`. Static-key inputs and repository-secret references have been removed. The bootstrap stack is applied locally so the main destroy workflow cannot remove CI's authentication role. Deployment verification and legacy-key cleanup remain operator steps.
+
 ### Remaining findings
 
-- Long-lived AWS access keys are still used; migrate to GitHub OIDC when ready.
 - The workflow still has no post-deploy Karpenter smoke test (see KAR-33).
 
 ---
@@ -627,7 +632,7 @@ Remaining:
 
 1. Verify S3 bucket versioning and Block Public Access (KAR-23).
 2. Finish formatting untouched Terraform files (KAR-26).
-3. Migrate CI to GitHub OIDC and add a Karpenter smoke test (KAR-30, KAR-33).
+3. Add a Karpenter smoke test (KAR-33). CI migration to GitHub OIDC was implemented on 2026-11-17 (KAR-30).
 
 ---
 

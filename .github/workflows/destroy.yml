@@ -16,6 +16,9 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,8 +27,7 @@ jobs:
         uses: ./.github/actions/setup-composite
         with:
           aws-region: ${{ inputs.aws_region }}
-          aws-access-key: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           terraform_version: ${{ inputs.terraform_version }}
           
       - name: Terraform Init

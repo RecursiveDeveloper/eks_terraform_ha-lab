@@ -14,6 +14,11 @@ eks-terraform/
 ├── provider.tf
 ├── terraform.auto.tfvars
 ├── README.md
+├── bootstrap/
+│   ├── backend.tf
+│   ├── main.tf
+│   ├── outputs.tf
+│   └── variables.tf
 ├── .github/
 │   ├── actions/
 │   │   └── setup-composite/
@@ -49,6 +54,7 @@ eks-terraform/
 - **VPC Module:** Provisions a VPC with public and private subnets across multiple AZs, tagged for Karpenter subnet discovery.
 - **IAM Module:** Manages two IAM users for DevOps; their cluster access is granted through EKS access entries.
 - **EKS Module:** Deploys an EKS cluster with managed node groups, EKS managed addons, Karpenter IAM roles, and access entries.
+- **GitHub OIDC Bootstrap:** Manages the GitHub OIDC provider and the short-lived AWS role used by CI, in separate state that survives main-stack destroy cycles.
 
 ## EKS Managed Addons
 
@@ -81,36 +87,66 @@ Before deploying this Terraform configuration, ensure the following are in place
 
 ### 1. S3 Backend Bucket
 
-Create an S3 bucket named `tf-backend-lab-s3` in `us-east-1` to store the Terraform state file:
+Create an S3 bucket named `tf-backend-lab-s3` in `us-east-1` to store the main and bootstrap Terraform state files:
 
 ```sh
 aws s3 mb s3://tf-backend-lab-s3 --region us-east-1
 ```
 
-> If you need to use a different bucket name, update the `bucket` field in [`provider.tf`](provider.tf) before running `terraform init`:
-> ```hcl
-> backend "s3" {
->   bucket = "your-bucket-name"
->   ...
-> }
-> ```
+> If you need to use a different bucket name, update the `bucket` field in both [`provider.tf`](provider.tf) and [`bootstrap/backend.tf`](bootstrap/backend.tf) before running `terraform init`. The bucket must be created outside Terraform because it stores the state for both stacks. Versioning, default encryption, and Block Public Access should be enabled on it.
 
-### 2. GitHub Actions Secrets
+### 2. One-Time GitHub OIDC Bootstrap
 
-Configure the following secrets in your GitHub repository:
+GitHub Actions authenticates to AWS with short-lived credentials obtained through GitHub OIDC. Long-lived AWS access keys are not stored as repository secrets.
+
+The separate [`bootstrap/`](bootstrap/) stack creates the GitHub OIDC provider and the `github-actions-deploy` IAM role. Its state is independent from the main stack, so running the destroy workflow does not remove the role required by future deployments.
+
+1. **Configure the repository subject.** The default `github_oidc_subject` in [`bootstrap/variables.tf`](bootstrap/variables.tf) allows only `workflow_dispatch` runs from this repository's `main` branch:
+   ```hcl
+   github_oidc_subject = "repo:RecursiveDeveloper/eks_terraform_ha-lab:ref:refs/heads/main"
+   ```
+
+   Repositories using GitHub's immutable subject claims instead require the owner and repository IDs:
+   ```text
+   repo:OWNER@OWNER-ID/REPOSITORY@REPOSITORY-ID:ref:refs/heads/main
+   ```
+
+2. **Check for an existing GitHub OIDC provider:**
+   ```sh
+   aws iam list-open-id-connect-providers
+   ```
+   AWS permits only one provider for `token.actions.githubusercontent.com` per account. If one already exists, import it after initialization in the next step instead of creating a duplicate.
+
+3. **Authenticate locally with administrative AWS credentials and apply only the bootstrap stack:**
+   ```sh
+   cd bootstrap
+   terraform init
+
+   # Only when the provider already exists:
+   terraform import aws_iam_openid_connect_provider.github <existing-provider-arn>
+
+   terraform plan
+   terraform apply
+   terraform output -raw github_actions_role_arn
+   ```
+
+   Copy the returned role ARN for the next step. CI never manages this bootstrap stack; local administrative credentials are used for its initial apply and eventual destroy.
+
+### 3. GitHub Actions Secret
+
+Configure this secret in your GitHub repository:
 
 | Secret | Description |
 |---|---|
-| `AWS_ACCESS_KEY_ID` | AWS access key ID |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret access key |
+| `AWS_DEPLOY_ROLE_ARN` | ARN of the `github-actions-deploy` role created by the bootstrap stack |
 
-The IAM user behind these credentials needs permissions to create EKS, VPC, IAM, and EC2 resources.
+Do not configure `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY` for the workflows. The deploy role has `AdministratorAccess`, so protect `main` and review workflow changes carefully: only runs dispatched from `main` are allowed to assume it.
 
 ## Usage
 
 ### GitHub Actions Deployment
 
-Trigger the workflow manually from the **Actions** tab using `workflow_dispatch`. Select either `deploy` or `destroy` as the action.
+Trigger the workflow manually from the **Actions** tab using `workflow_dispatch` on `main`. Select either `deploy` or `destroy` as the action. The OIDC trust policy rejects dispatches from other branches.
 
 The workflow is defined in `.github/workflows/main.yml` and delegates to:
 - `.github/workflows/deploy.yml` — provisions infrastructure and installs controllers
@@ -144,6 +180,24 @@ The workflow is defined in `.github/workflows/main.yml` and delegates to:
    terraform apply
    ```
 
+## Recreating and Completely Removing the Lab
+
+For ordinary lab cycles, dispatch `destroy` and later `deploy` from `main`. These operations affect only the main stack; the bootstrap role and state persist and do not need to be recreated.
+
+To remove the entire lab and its CI identity:
+
+1. Dispatch the `destroy` workflow from `main` and wait for it to finish.
+2. From a local administrative AWS session, destroy the bootstrap stack:
+   ```sh
+   cd bootstrap
+   terraform destroy
+   ```
+3. Delete the `AWS_DEPLOY_ROLE_ARN` repository secret.
+4. Delete the S3 backend bucket and both state objects.
+5. Delete the local clone or GitHub repository if desired.
+
+If the AWS account is shared with other projects, do not delete a GitHub OIDC provider that other roles still use. Remove only this lab's deploy role instead.
+
 ## Connecting to the EKS Cluster
 
 1. **Update kubeconfig:**
@@ -157,7 +211,7 @@ The workflow is defined in `.github/workflows/main.yml` and delegates to:
    kubectl get pods -A
    ```
 
-The IAM user used to deploy the cluster is automatically granted admin access via `enable_cluster_creator_admin_permissions`. Additional DevOps users are granted cluster admin access through EKS access entries.
+The AWS identity used to deploy the cluster is automatically granted admin access via `enable_cluster_creator_admin_permissions`. Additional DevOps users are granted cluster admin access through EKS access entries.
 
 ## Modules
 
@@ -204,6 +258,20 @@ AWS account permissions required: EKS, VPC, IAM, EC2.
 Edit [`terraform.auto.tfvars`](terraform.auto.tfvars) to set:
 - VPC name, CIDR, subnets, and AZs
 - EKS cluster name and node group configuration
+
+### Forking or Reusing the Lab
+
+An independent operator needs their own GitHub repository and AWS account. A clone inherits the source code, not AWS access, GitHub secrets, or Terraform state.
+
+Before deploying a fork:
+
+1. Create a globally unique S3 backend bucket and update both backend configurations.
+2. Set `github_oidc_subject` to the exact subject issued for the fork's repository and `main` branch, using the immutable format if applicable.
+3. Update the cluster name and AWS region if necessary.
+4. Run the one-time bootstrap locally and configure `AWS_DEPLOY_ROLE_ARN` in the fork.
+5. Merge the configuration to `main` and dispatch the deploy workflow there.
+
+Never commit `.tfstate` files, `.terraform/` directories, saved plans, or generated outputs. Commit the bootstrap source and its `.terraform.lock.hcl`; each operator's `bootstrap.tfstate` remains private in that operator's S3 backend.
 
 ## Notes
 
